@@ -1,4 +1,4 @@
-"""체스 상태와 규칙. FastAPI를 몰라도 읽고 테스트할 수 있는 코드."""
+"""Chess state and rules, readable and testable without knowledge of FastAPI."""
 
 from dataclasses import dataclass, field
 from typing      import Literal
@@ -10,7 +10,7 @@ Action = Literal["move", "resign", "claim_draw", "offer_draw", "accept_draw", "d
 
 
 class InvalidAction(ValueError):
-    """사용자에게 설명할 명령 거절. 예상하지 못한 내부 오류와 구분한다."""
+    """A command rejection to explain to the user, distinct from unexpected internal errors."""
 
 
 @dataclass
@@ -84,13 +84,13 @@ class Game:
         if move not in self.board.legal_moves:
             raise InvalidAction("That move is not legal.")
 
-        # SAN은 움직이기 전의 판에서 계산한다. 체크·잡기 정보가 이 판에 달려 있다.
+        # Calculate SAN before moving: check and capture notation depend on the current board.
         notation = self.board.san(move)
         self.moves.append(notation)
         self.board.push(move)
 
         if self.draw_offer != color:
-            self.draw_offer = None  # 상대의 제안에 수를 두면 거절한 것으로 처리.
+            self.draw_offer = None  # Making a move declines the opponent's draw offer.
 
     def snapshot(self) -> dict:
         pieces = {}

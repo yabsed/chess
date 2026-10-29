@@ -46,7 +46,7 @@
   let selectedMoves = $derived(game.legal_moves.filter((move) => move.from === selected));
   let destinations  = $derived(selectedMoves.map((move) => move.to));
 
-  // 서버가 새 상태를 확정하면 이전 선택을 지운다. 판 방향은 유지한다.
+  // Clear the previous selection when the server confirms a new state. Keep the board orientation.
   $effect(() => {
     game.revision;
     selected   = null;

@@ -1,4 +1,4 @@
-"""참가, 연결, 명령을 처리한다. 방의 변경과 전송은 이 안에서 직렬화한다."""
+"""Handle joins, connections and commands. Serialise room changes and sends here."""
 
 import asyncio
 import secrets
@@ -97,14 +97,14 @@ class Room:
                     try:
                         await previous.close(4409, "Your seat is connected in another tab.")
                     except (WebSocketDisconnect, RuntimeError, OSError):
-                        pass  # 이미 끊긴 연결이어도 새 연결은 등록한다.
+                        pass  # Keep the new connection even if the previous one has already closed.
 
                 await self._broadcast()
 
             yield
         finally:
             async with self._lock:
-                # 이전 연결의 정리가 새 연결을 지우면 안 된다.
+                # Cleaning up the previous connection must not remove its replacement.
                 if player.socket is socket:
                     player.socket      = None
                     self.last_activity = monotonic()
@@ -116,7 +116,7 @@ class Room:
             if player.socket is not socket:
                 return False
 
-            # 입력 형식과 대국 조건을 확인한 뒤 한 번만 적용한다.
+            # Validate the input format and game conditions, then apply the command once.
             error = None
             try:
                 command = Command.model_validate_json(message)
@@ -135,7 +135,7 @@ class Room:
                 except InvalidAction as rejection:
                     error = str(rejection)
 
-            # 거절한 요청에도 최신 상태를 보내 두 화면을 맞춘다.
+            # Send the latest state even after a rejection to keep both views synchronised.
             if error is not None:
                 await player.send({"type": "error", "message": error})
 
@@ -144,7 +144,7 @@ class Room:
             return player.socket is socket
 
     async def _broadcast(self) -> None:
-        # 이 메서드는 방 내부에서만, _lock을 보유한 채 호출한다.
+        # Only call this method from within the room while holding _lock.
         while self.connected:
             state = {
                 **self._game.snapshot(),
@@ -157,4 +157,4 @@ class Room:
 
             if state["connected"] == self.connected:
                 break
-            # 전송 중 끊긴 참가자가 있으면 바뀐 접속 상태를 다시 알린다.
+            # Broadcast the updated connection status if a player disconnected during a send.

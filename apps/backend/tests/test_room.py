@@ -53,7 +53,7 @@ def test_connection_scope_cleans_up_after_processing_error():
             latest_state = black.send_json.call_args.args[0]["game"]
             assert latest_state["connected"] == ["black"]
 
-            # 정리가 끝나면 같은 자리로 재접속해 다음 명령을 처리할 수 있다.
+            # After cleanup, the same seat can reconnect and process the next command.
             async with room.connect("white", white):
                 await room.handle(
                     "white", white,

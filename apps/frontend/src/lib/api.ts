@@ -70,7 +70,7 @@ export function connect(session: Session, handlers: ConnectionHandlers) {
     const current = new WebSocket(url);
     socket = current;
 
-    // 인증 뒤 첫 상태를 받아야 접속 완료다. 응답이 없으면 다시 연결한다.
+    // The connection is ready after the first authenticated state arrives. Reconnect if it times out.
     connectionTimer = setTimeout(() => current.close(), 10000);
     current.onopen = () => {
       current.send(JSON.stringify({ token: session.token }));
@@ -94,7 +94,7 @@ export function connect(session: Session, handlers: ConnectionHandlers) {
       clearTimeout(connectionTimer);
       if (stopped) return;
 
-      // 인증 거절, 방 만료, 연결 교체, 정책 위반은 재접속으로 해결되지 않는다.
+      // Reconnecting cannot resolve failed authentication, expired rooms, replaced connections or policy violations.
       const cannotReconnect = [4401, 4404, 4409, 1008].includes(event.code);
       if (cannotReconnect) {
         stopped = true;

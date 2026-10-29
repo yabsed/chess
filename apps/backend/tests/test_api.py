@@ -57,7 +57,7 @@ def test_http_errors_and_seat_reservation(client):
     assert client.post("/api/games/invalid/join").status_code == 422
 
 
-@pytest.mark.parametrize("token", ["wrong", "한글", "", None])
+@pytest.mark.parametrize("token", ["wrong", "invalid-£-token", "", None])
 def test_auth_rejects_invalid_tokens(client, token):
     session = create(client)
     with client.websocket_connect(f"/api/games/{session['id']}/ws") as socket:

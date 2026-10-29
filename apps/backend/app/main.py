@@ -1,4 +1,4 @@
-"""HTTP로 입장하고 WebSocket으로 메시지를 받아 해당 방에 전달한다."""
+"""Handle joins over HTTP and route incoming WebSocket messages to the relevant room."""
 
 import asyncio
 import secrets
@@ -94,7 +94,7 @@ async def play(socket: WebSocket, room_id: RoomId):
         await socket.close(4404, "This game does not exist or has expired.")
         return
 
-    # 토큰을 URL에 넣지 않아 서버의 URL 로그나 초대 링크에 남기지 않는다.
+    # Keep tokens out of URLs so they do not appear in server URL logs or invitation links.
     try:
         raw  = await asyncio.wait_for(socket.receive_text(), timeout = AUTH_TIMEOUT_SECONDS)
         auth = Auth.model_validate_json(raw)
@@ -111,12 +111,12 @@ async def play(socket: WebSocket, room_id: RoomId):
 
     async with room.connect(color, socket):
         while True:
-            # 소켓 오류만 연결 종료로 다룬다. 방 내부의 예외는 숨기지 않는다.
+            # Only socket errors end the connection here; let internal room exceptions propagate.
             try:
                 message = await socket.receive_text()
             except (WebSocketDisconnect, RuntimeError, OSError):
                 break
-            except KeyError:  # receive_text가 바이너리 프레임을 받은 경우.
+            except KeyError:  # receive_text received a binary frame.
                 await socket.close(1003, "Only JSON text messages are supported.")
                 break
 
@@ -125,7 +125,7 @@ async def play(socket: WebSocket, room_id: RoomId):
                 break
 
 
-# 빌드 후에는 FastAPI 하나로 프런트까지 제공한다. API보다 뒤에 등록한다.
+# Serve the built frontend through FastAPI as well. Register it after the API routes.
 frontend = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
 if frontend.is_dir():
