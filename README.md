@@ -46,6 +46,29 @@ npm run dev -- --port 5174
 
 같은 Wi-Fi의 다른 기기로 접속하려면 프런트를 `npm run dev -- --host 0.0.0.0 --port 5174`로 실행하고 `http://내-PC의-IP:5174`로 여세요. 그 주소에서 만든 초대 링크를 공유하면 됩니다. 백엔드는 Vite가 대신 연결하므로 로컬 주소로 실행해도 됩니다.
 
+## Docker로 백엔드 실행
+
+Docker가 실행 중이면 프로젝트 루트에서 다음 명령으로 백엔드를 빌드하고 실행합니다.
+
+```sh
+make backend-docker
+```
+
+로컬 Python과 uv 설치 없이 백엔드를 실행할 수 있습니다. 프런트는 다른 터미널에서 `npm ci --prefix apps/frontend` 후 `make frontend`로 실행하세요. 프런트가 기존과 같은 `http://127.0.0.1:8000`으로 API와 WebSocket을 연결합니다. 이 이미지는 백엔드만 포함합니다.
+
+`make backend`가 실행 중이라면 먼저 `Ctrl+C`로 종료하세요. 두 실행 방법 모두 호스트의 8000번 포트를 사용합니다. Docker로 실행한 백엔드도 `Ctrl+C`로 종료하면 컨테이너가 제거되고, 이미지는 다음 실행에 재사용됩니다.
+
+Makefile 안의 명령은 다음 두 줄입니다.
+
+```sh
+docker build -t chess-backend apps/backend
+docker run --rm --name chess-backend -p 127.0.0.1:8000:8000 chess-backend
+```
+
+`Dockerfile`은 Python 3.13 환경에 `uv.lock`의 실행 의존성을 설치한 뒤 `app/`을 복사합니다. 의존성 설치를 먼저 두어 소스만 바뀌면 설치 단계를 캐시에서 재사용합니다. `.dockerignore`는 로컬 가상환경·캐시·테스트·환경 파일을 빌드 컨텍스트에서 제외합니다. [uv의 Docker 안내](https://docs.astral.sh/uv/guides/integration/docker/)를 바탕으로 구성했습니다.
+
+컨테이너는 일반 사용자 권한으로 Uvicorn 한 프로세스를 실행합니다. `--host 0.0.0.0`은 컨테이너 안에서 요청을 받고, `-p 127.0.0.1:8000:8000`은 호스트의 로컬 포트와 연결합니다. 소스를 수정하면 종료 후 `make backend-docker`를 다시 실행해 이미지를 갱신하세요. 대국은 메모리에 저장되므로 컨테이너를 재시작하면 초기화됩니다.
+
 ## 구조
 
 ```text
@@ -61,6 +84,8 @@ chess/
 │   │   │   ├── test_api.py      # 실제 TestClient 두 개의 통신
 │   │   │   ├── test_room.py     # 동시 요청, 전송 실패, 연결 정리
 │   │   │   └── test_game.py     # 특수 이동과 승패·무승부 규칙
+│   │   ├── .dockerignore
+│   │   ├── Dockerfile
 │   │   ├── pyproject.toml
 │   │   └── uv.lock
 │   └── frontend/

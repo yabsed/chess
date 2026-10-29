@@ -1,6 +1,6 @@
 PORT ?= 5174
 
-.PHONY: install backend frontend check build serve
+.PHONY: install backend backend-docker frontend check build serve
 
 install:
 	uv sync --directory apps/backend --locked
@@ -8,6 +8,10 @@ install:
 
 backend:
 	uv run --directory apps/backend uvicorn app.main:app --reload --ws-max-size 4096
+
+backend-docker:
+	docker build -t chess-backend apps/backend
+	docker run --rm --name chess-backend -p 127.0.0.1:8000:8000 chess-backend
 
 frontend:
 	npm run --prefix apps/frontend dev -- --port $(PORT)
