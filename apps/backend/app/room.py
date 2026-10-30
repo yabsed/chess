@@ -11,6 +11,7 @@ from fastapi  import WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .game import Action, Color, Game, InvalidAction
+from .chat import Chat, ChatRoom 
 
 SEND_TIMEOUT_SECONDS = 3
 
@@ -18,9 +19,16 @@ SEND_TIMEOUT_SECONDS = 3
 class Command(BaseModel):
     model_config = ConfigDict(extra = "forbid", strict = True)
 
+    isChat   : bool = Field(default = False)
+
+    # chess 
     type     : Action
-    revision : int = Field(ge = 0)
-    move     : str = Field(default = "", max_length = 5)
+    revision : int  = Field(ge = 0)
+    move     : str  = Field(default = "", max_length = 5)
+
+    # chat 
+    content : str | None = Field(default = None)
+    amount  : int        = Field(default = 0, ge = 0)
 
 
 class RoomFull(Exception):
@@ -46,12 +54,13 @@ class Player:
 class Room:
     last_activity: float = field(default_factory = monotonic)
 
-    _game    : Game                = field(default_factory = Game,         init = False)
-    _players : dict[Color, Player] = field(
+    _game     : Game                = field(default_factory = Game,         init = False)
+    _players  : dict[Color, Player] = field(
         default_factory = lambda: {"white": Player()},
         init            = False,
     )
-    _lock    : asyncio.Lock        = field(default_factory = asyncio.Lock, init = False)
+    _lock     : asyncio.Lock        = field(default_factory = asyncio.Lock, init = False)
+    _chatRoom : ChatRoom            = field(default_factory = ChatRoom,     init = False)
 
     @property
     def white_token(self) -> str:
@@ -124,21 +133,37 @@ class Room:
                 error = "Invalid request format."
             else:
                 try:
-                    if command.revision != self._game.revision:
-                        raise InvalidAction("The game has changed. Please try again.")
-                    if len(self._players) < 2:
-                        raise InvalidAction("Please wait for your opponent to join.")
-                    if command.type != "resign" and len(self.connected) < 2:
-                        raise InvalidAction("Please wait for your opponent to reconnect.")
+                    if command.isChat:
+                        # Missing content requests history without adding a message.
+                        if command.content is not None:
+                            if not command.content:
+                                raise InvalidAction("Chat messages must not be empty.")
+                            if len(command.content) > 140:
+                                raise InvalidAction("Chat messages must be at most 140 characters.")
 
-                    self._game.apply(color, command.type, command.move)
+                            self._chatRoom.append(Chat(sender = color, content = command.content))
+                    else: 
+                        if command.revision != self._game.revision:
+                            raise InvalidAction("The game has changed. Please try again.")
+                        if len(self._players) < 2:
+                            raise InvalidAction("Please wait for your opponent to join.")
+                        if command.type != "resign" and len(self.connected) < 2:
+                            raise InvalidAction("Please wait for your opponent to reconnect.")
+
+                        self._game.apply(color, command.type, command.move)
                 except InvalidAction as rejection:
                     error = str(rejection)
 
-            # Send the latest state even after a rejection to keep both views synchronised.
+            # Validation can fail before command is assigned; handle errors first.
             if error is not None:
                 await player.send({"type": "error", "message": error})
+            elif command.isChat:
+                await player.send({
+                    "type": "chat_history",
+                    "logs": self._chatRoom.recent_logs(command.amount),
+                })
 
+            # Send the latest state even after a rejection to keep both views synchronised.
             self.last_activity = monotonic()
             await self._broadcast()
             return player.socket is socket
@@ -153,7 +178,12 @@ class Room:
             }
 
             for color, player in self._players.items():
-                await player.send({"type": "state", "you": color, "game": state})
+                await player.send({
+                    "type": "state", 
+                    "you": color, 
+                    "game": state,
+                    "logs": self._chatRoom.recent_logs(5),
+                })
 
             if state["connected"] == self.connected:
                 break

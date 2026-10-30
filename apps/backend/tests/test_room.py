@@ -122,3 +122,108 @@ def test_replaced_socket_cannot_issue_commands():
                 assert black.send_json.call_args.args[0]["game"]["revision"] == 0
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("message", [
+    "not json",
+    "[]",
+    '{"isChat":true,"content":"hello"}',
+    *[
+        json.dumps({"type": "move", "revision": 0, "isChat": True, **fields})
+        for fields in [
+            {"content": "hello", "amount": -1},
+            {"content": ""},
+            {"content": "x" * 141},
+            {"content": 123},
+        ]
+    ],
+])
+def test_rejected_messages_report_errors_without_mutating_chat_or_closing_connection(message):
+    async def scenario():
+        room = Room()
+        await room.join()
+        white = AsyncMock(spec = WebSocket)
+        black = AsyncMock(spec = WebSocket)
+
+        async with room.connect("white", white), room.connect("black", black):
+            white.send_json.reset_mock()
+            black.send_json.reset_mock()
+
+            assert await room.handle("white", white, message)
+
+            responses = [call.args[0] for call in white.send_json.call_args_list]
+            assert [response["type"] for response in responses] == ["error", "state"]
+            assert responses[0]["message"]
+            assert responses[1]["logs"] == []
+            assert responses[1]["game"]["revision"] == 0
+            assert black.send_json.call_args.args[0]["logs"] == []
+            assert room._chatRoom.logs == []
+
+            # A rejected message must leave the same connection usable for chess.
+            assert await room.handle(
+                "white", white, '{"type":"move","revision":0,"move":"e2e4"}'
+            )
+            assert black.send_json.call_args.args[0]["game"]["moves"] == ["e4"]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("color", ["white", "black"])
+def test_chat_reaches_both_players_without_changing_game_state(color):
+    async def scenario():
+        room = Room()
+        await room.join()
+        white = AsyncMock(spec = WebSocket)
+        black = AsyncMock(spec = WebSocket)
+        sockets = {"white": white, "black": black}
+        content = "x" * 140
+        expected_logs = [{"sender": color, "content": content}]
+
+        async with room.connect("white", white), room.connect("black", black):
+            before = white.send_json.call_args.args[0]["game"]
+            white.send_json.reset_mock()
+            black.send_json.reset_mock()
+
+            assert await room.handle(color, sockets[color], json.dumps({
+                "type": "move", "revision": 0, "isChat": True,
+                "content": content, "amount": 5,
+            }))
+
+            for recipient, socket in sockets.items():
+                responses = [call.args[0] for call in socket.send_json.call_args_list]
+                expected_types = ["chat_history", "state"] if recipient == color else ["state"]
+                assert [response["type"] for response in responses] == expected_types
+                assert all(response["logs"] == expected_logs for response in responses)
+                assert responses[-1]["game"] == before
+            assert len(room._chatRoom.logs) == 1
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("content_fields", [{}, {"content": None}])
+@pytest.mark.parametrize("amount", [0, 1, 20])
+def test_chat_history_requests_do_not_append_messages(content_fields, amount):
+    async def scenario():
+        room = Room()
+        socket = AsyncMock(spec = WebSocket)
+        command = {"type": "move", "revision": 0, "isChat": True}
+
+        async with room.connect("white", socket):
+            for content in ["first", "second"]:
+                await room.handle("white", socket, json.dumps({**command, "content": content}))
+            socket.send_json.reset_mock()
+
+            assert await room.handle("white", socket, json.dumps({
+                **command, "amount": amount, **content_fields,
+            }))
+
+            responses = [call.args[0] for call in socket.send_json.call_args_list]
+            assert [response["type"] for response in responses] == ["chat_history", "state"]
+            assert responses[0]["logs"] == [
+                {"sender": "white", "content": "second"},
+                {"sender": "white", "content": "first"},
+            ][:amount]
+            assert len(room._chatRoom.logs) == 2
+            assert responses[1]["game"]["revision"] == 0
+
+    asyncio.run(scenario())
