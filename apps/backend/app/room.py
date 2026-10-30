@@ -6,20 +6,11 @@ import secrets
 from dataclasses import dataclass, field
 from time        import monotonic
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import ValidationError
 from socketio import AsyncServer
 
-from .game import Action, Color, Game, InvalidAction
-
-sio = AsyncServer(async_mode = "asgi", async_handlers = False, max_http_buffer_size = 4096)
-
-
-class Command(BaseModel):
-    model_config = ConfigDict(extra = "forbid", strict = True)
-
-    type     : Action
-    revision : int = Field(ge = 0)
-    move     : str = Field(default = "", max_length = 5)
+from .game     import Color, Game, InvalidAction
+from .protocol import Command
 
 
 class RoomFull(Exception):
@@ -32,17 +23,16 @@ class Player:
     sid   : str | None = None
 
 
-@dataclass
 class Room:
-    id            : str
-    last_activity : float = field(default_factory = monotonic)
+    def __init__(self, room_id: str, socket: AsyncServer) -> None:
+        self.id     = room_id
+        self.socket = socket
 
-    _game    : Game                = field(default_factory = Game,         init = False)
-    _lock    : asyncio.Lock        = field(default_factory = asyncio.Lock, init = False)
-    _players : dict[Color, Player] = field(
-        default_factory = lambda: {"white": Player()},
-        init            = False,
-    )
+        self._game = Game()
+        self._lock = asyncio.Lock()
+
+        self._players: dict[Color, Player] = {"white": Player()}
+        self.last_activity = monotonic()
 
     @property
     def white_token(self) -> str:
@@ -58,8 +48,9 @@ class Room:
                 raise RoomFull("This game already has two players.")
 
             player = Player()
+
             self._players["black"] = player
-            self.last_activity = monotonic()
+            self.last_activity     = monotonic()
 
             await self._broadcast()
             return player.token
@@ -79,17 +70,18 @@ class Room:
             player   = self._players[color]
             previous = player.sid
             if previous is not None:
-                await sio.leave_room(previous, self.id)
+                await self.socket.leave_room(previous, self.id)
 
             player.sid         = sid
             self.last_activity = monotonic()
-            await sio.enter_room(sid, self.id)
+
+            await self.socket.enter_room(sid, self.id)
             await self._broadcast()
 
         # Disconnect invokes our cleanup handler, which acquires the same lock.
         if previous is not None:
-            await sio.emit("session_closed", "Your seat is connected in another tab.", to = previous)
-            await sio.disconnect(previous)
+            await self.socket.emit("session_closed", "Your seat is connected in another tab.", to = previous)
+            await self.socket.disconnect(previous)
 
     async def disconnect(self, color: Color, sid: str) -> None:
         async with self._lock:
@@ -99,7 +91,8 @@ class Room:
 
             player.sid         = None
             self.last_activity = monotonic()
-            await sio.leave_room(sid, self.id)
+
+            await self.socket.leave_room(sid, self.id)
             await self._broadcast()
 
     async def handle(self, color: Color, sid: str, message: object) -> dict[str, str | None]:
@@ -136,4 +129,4 @@ class Room:
             "joined"    : list(self._players),
             "connected" : self.connected,
         }
-        await sio.emit("state", state, to = self.id)
+        await self.socket.emit("state", state, to = self.id)

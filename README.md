@@ -13,10 +13,12 @@ make install
 터미널 두 개를 열어 각각 실행하세요.
 
 ```sh
+# 터미널 1
 make backend
 ```
 
 ```sh
+# 터미널 2
 make frontend
 ```
 
@@ -24,50 +26,23 @@ make frontend
 - HTTP API 문서: <http://127.0.0.1:8000/docs>
 - 상태 확인: <http://127.0.0.1:8000/api/health>
 
-프런트 포트는 `make frontend PORT=5175`처럼 바꿀 수 있습니다.
-
-`make` 없이도 실행할 수 있습니다.
-
-```sh
-# 터미널 1
-cd apps/backend
-uv sync --locked
-uv run uvicorn app.main:app --reload --ws-max-size 4096
-```
-
-```sh
-# 터미널 2, 프로젝트 루트에서 시작
-cd apps/frontend
-npm ci
-npm run dev -- --port 5174
-```
+프런트 포트는 `make frontend PORT=5175`처럼 바꿀 수 있습니다. Vite가 `/api`의 HTTP와 WebSocket을 백엔드로 전달합니다.
 
 첫 화면에서 **New game**을 누르면 백이 됩니다. 초대 링크를 다른 브라우저나 새 탭의 주소창에 붙여 넣고 **Join as Black**을 누르세요. 같은 컴퓨터에서는 일반 창과 시크릿 창으로 접속하면 편합니다. 두 플레이어가 접속하면 시작합니다.
 
-같은 Wi-Fi의 다른 기기로 접속하려면 프런트를 `npm run dev -- --host 0.0.0.0 --port 5174`로 실행하고 `http://내-PC의-IP:5174`로 여세요. 그 주소에서 만든 초대 링크를 공유하면 됩니다. 백엔드는 Vite가 대신 연결하므로 로컬 주소로 실행해도 됩니다.
+같은 Wi-Fi의 다른 기기로 접속하려면 `apps/frontend`에서 `npm run dev -- --host 0.0.0.0`으로 실행하고 `http://내-PC의-IP:5174`로 여세요. 그 주소에서 만든 초대 링크를 공유하면 됩니다.
 
 ## Docker로 백엔드 실행
 
-Docker가 실행 중이면 프로젝트 루트에서 다음 명령으로 백엔드를 빌드하고 실행합니다.
+로컬 Python과 uv 대신 Docker를 사용할 수 있습니다. 프로젝트 루트에서:
 
 ```sh
 make backend-docker
 ```
 
-로컬 Python과 uv 설치 없이 백엔드를 실행할 수 있습니다. 프런트는 다른 터미널에서 `npm ci --prefix apps/frontend` 후 `make frontend`로 실행하세요. 프런트가 기존과 같은 `http://127.0.0.1:8000`으로 API와 WebSocket을 연결합니다. 이 이미지는 백엔드만 포함합니다.
+이미지는 백엔드만 포함합니다. 프런트는 `npm ci --prefix apps/frontend`로 설치하고 `make frontend`로 실행하세요. 기존 백엔드가 8000번 포트를 사용 중이면 먼저 종료하세요. `Ctrl+C`로 컨테이너를 종료하면 컨테이너는 제거되고 이미지는 남습니다.
 
-`make backend`가 실행 중이라면 먼저 `Ctrl+C`로 종료하세요. 두 실행 방법 모두 호스트의 8000번 포트를 사용합니다. Docker로 실행한 백엔드도 `Ctrl+C`로 종료하면 컨테이너가 제거되고, 이미지는 다음 실행에 재사용됩니다.
-
-Makefile 안의 명령은 다음 두 줄입니다.
-
-```sh
-docker build -t chess-backend apps/backend
-docker run --rm --name chess-backend -p 127.0.0.1:8000:8000 chess-backend
-```
-
-`Dockerfile`은 Python 3.13 환경에 `uv.lock`의 실행 의존성을 설치한 뒤 `app/`을 복사합니다. 의존성 설치를 먼저 두어 소스만 바뀌면 설치 단계를 캐시에서 재사용합니다. `.dockerignore`는 로컬 가상환경·캐시·환경 파일을 빌드 컨텍스트에서 제외합니다. [uv의 Docker 안내](https://docs.astral.sh/uv/guides/integration/docker/)를 바탕으로 구성했습니다.
-
-컨테이너는 일반 사용자 권한으로 Uvicorn 한 프로세스를 실행합니다. `--host 0.0.0.0`은 컨테이너 안에서 요청을 받고, `-p 127.0.0.1:8000:8000`은 호스트의 로컬 포트와 연결합니다. 소스를 수정하면 종료 후 `make backend-docker`를 다시 실행해 이미지를 갱신하세요. 대국은 메모리에 저장되므로 컨테이너를 재시작하면 초기화됩니다.
+소스를 수정하면 다시 빌드해 실행하세요. 컨테이너는 `uv.lock`의 실행 의존성을 설치하고 일반 사용자 권한으로 Uvicorn 한 프로세스를 실행합니다.
 
 ## 구조
 
@@ -76,11 +51,10 @@ chess/
 ├── apps/
 │   ├── backend/
 │   │   ├── app/
-│   │   │   ├── __init__.py
-│   │   │   ├── main.py          # HTTP 입장, Socket.IO 인증과 이벤트 수신
+│   │   │   ├── main.py          # 서버 구성, HTTP·Socket.IO 요청 수신
+│   │   │   ├── protocol.py      # HTTP 응답과 Socket.IO 입력 모델
 │   │   │   ├── room.py          # 참가·연결·명령 처리와 잠금, 상태 전송
 │   │   │   └── game.py          # 체스 상태, 수 검증, 종료 처리
-│   │   ├── .dockerignore
 │   │   ├── Dockerfile
 │   │   ├── pyproject.toml
 │   │   └── uv.lock
@@ -95,7 +69,7 @@ chess/
 │       │       ├── MoveHistory.svelte      # 백·흑의 수를 짝지어 표시
 │       │       ├── room.svelte.ts          # 입장, 연결, 행동 조건과 명령
 │       │       ├── api.ts                  # 방 생성·참가 HTTP 요청
-│       │       ├── protocol.ts             # 서버와 주고받는 자리·상태·명령·이벤트
+│       │       ├── protocol.ts             # 자리·대국 상태·명령·이벤트의 타입
 │       │       └── board/
 │       │           ├── Board.svelte        # 판 방향, 승급 선택, 반응형 갱신 시점
 │       │           ├── chessboard.ts       # cm-chessboard 생성, 수 해석, 입력과 표시
@@ -116,30 +90,7 @@ chess/
 
 백엔드는 **요청·방·체스 규칙**, 프런트는 **접속·대국 화면·체스판·기보**를 경계로 나눴습니다. 각 파일에서 한 가지 주제를 따라 읽을 수 있습니다. 체스 규칙은 `python-chess`, 판 표시와 입력은 `cm-chessboard`, 기본 HTML 스타일은 `simpledotcss`, 실시간 연결과 메시지 전달은 `socket.io-client`와 `python-socketio`에 맡깁니다. 프런트는 서버가 보내는 FEN으로 판을 갱신하고 합법적인 수를 표시합니다. 승급 선택은 브라우저의 `<dialog>`를 사용합니다.
 
-## 구현한 기능
-
-- 방 생성, 링크 초대, 백·흑 자리 배정, 세 번째 플레이어 입장 차단
-- 두 화면의 실시간 동기화, 차례와 합법적인 이동 검증
-- 캐슬링, 앙파상, 퀸·룩·비숍·나이트 승급
-- 체크, 체크메이트, 스테일메이트, 기물 부족에 따른 무승부
-- 3회 반복·50수 규칙의 무승부 청구, 5회 반복·75수 규칙의 자동 종료
-- 무승부 제안·수락·거절, 기권, 종료 후 새 대국
-- SAN 기보, 마지막 수와 이동 가능한 칸 표시, 흑의 시점, 판 뒤집기
-- 모바일 화면, 키보드로 기물 선택, 영어 화면·접근성 라벨·오류 안내
-- 같은 탭의 새로고침 복구, 끊긴 연결의 자동 재접속, 상대 접속 상태
-
 ## 코드 읽는 순서
-
-| 위치 | 맡는 일 |
-| --- | --- |
-| `game.py` | 체스 규칙, 수 적용, 대국 상태 |
-| 서버 `room.py` | 자리·접속 관리, 잠금 안에서 명령 처리와 상태 전송 |
-| 서버 `main.py` | HTTP·Socket.IO 요청을 방에 연결하고 결과 반환 |
-| `api.ts` · `http.ts` | 입장 요청, 공통 HTTP 설정과 오류 처리 |
-| 프런트 `room.svelte.ts` | 입장·복구·연결, 서버 상태 수신, 명령별 응답 대기 |
-| `App.svelte` · `GameView.svelte` | 화면 수명, 입장 화면, 대국 문구와 버튼 |
-| `Board.svelte` · `chessboard.ts` | 판 방향·승급 선택, 보드 라이브러리의 입력과 표시 |
-| `MoveHistory.svelte` | SAN 기보를 백·흑의 수로 짝지어 표시 |
 
 한 수는 다음 순서로 처리됩니다.
 
@@ -155,10 +106,12 @@ Board.selectMove() → 프런트 Room.send("move", "e2e4")
 
 방의 잠금은 명령 처리와 상태 전송 순서를 지킵니다. 같은 클라이언트의 이벤트는 순서대로 처리하고, 다른 클라이언트의 요청은 방의 잠금으로 직렬화합니다. 이전 탭을 종료할 때는 잠금을 먼저 풀어 종료 핸들러가 같은 잠금을 기다리며 멈추지 않게 합니다.
 
+`main.py`에서 FastAPI와 Socket.IO 서버를 구성하고 `Room`에 전송할 서버를 전달합니다. `Room`은 게임·잠금·백의 자리를 직접 초기화합니다. 방 조회는 `Room` 또는 `None`을 반환하고, HTTP와 Socket.IO의 입구에서 각각 오류 응답과 연결 거절로 처리합니다.
+
 코드를 바꿀 때도 이 기준을 유지합니다.
 
 - 데이터와 그 데이터를 바꾸는 동작을 가까이 둡니다. 검증·변경·전송을 실행 순서대로 읽을 수 있게 합니다.
-- 통신 타입은 `protocol.ts`, 클라이언트 연결 상태는 `room.svelte.ts`, UCI 해석과 `Move`는 `board/chessboard.ts`에 둡니다.
+- 프런트의 통신 타입은 `protocol.ts`, 연결 상태는 `room.svelte.ts`, UCI 해석과 `Move`는 `board/chessboard.ts`에 둡니다.
 - App은 확인된 자리를 대국 화면에 전달합니다. 새 대국은 화면 상태를 초기화하고, 연결 종료는 마지막 보드와 결과를 남깁니다.
 - `Room.allowed`는 화면과 전송 코드가 함께 읽는 행동 조건입니다. 도착한 명령의 차례·합법성은 서버가 다시 검증합니다.
 - 판은 서버의 FEN으로 갱신합니다. 새 상태·방향·입력 가능 여부가 바뀌면 진행 중인 선택을 취소합니다.
@@ -166,16 +119,15 @@ Board.selectMove() → 프런트 Room.send("move", "e2e4")
 
 소스의 배치에도 의미를 둡니다. 함께 비교할 필드·대입문은 작은 묶음 안에서 열을 맞추고, 준비·검증·변경·전송 사이에 빈 줄을 둡니다. 짧은 호출과 속성은 붙여 읽고, 긴 표현은 의미가 나뉘는 곳에서 줄을 나눕니다. 주석에는 코드만으로 드러나지 않는 이유와 순서 제약을 적습니다.
 
-들여쓰기는 Python 4칸, 프런트 2칸이며 열 정렬에는 공백을 씁니다. Makefile 명령은 탭입니다. `.editorconfig`가 기본 공백 규칙을 지정합니다. 자동 포매팅 후에도 문단과 열 정렬이 유지되는지 diff를 확인하세요.
+들여쓰기는 Python 4칸, 프런트 2칸이며 열 정렬에는 공백을 씁니다. `.editorconfig`가 기본 공백 규칙을 지정합니다. 자동 포매팅 후에도 문단과 열 정렬이 유지되는지 diff를 확인하세요.
 
 ## 통신 규약
 
-| 요청 | 결과 |
-| --- | --- |
-| `GET /api/health` | 서버 상태 |
-| `POST /api/games` | `{ id, token, color: "white" }`, HTTP 201 |
-| `POST /api/games/{id}/join` | `{ id, token, color: "black" }` |
-| Socket.IO `/api/socket.io` | 연결 인증 후 이벤트 송수신; WebSocket 전송 사용 |
+HTTP는 방 생성과 자리 배정을 맡습니다. 요청 경로·응답 필드·오류 코드는 실행 중인 서버의 [Swagger UI](http://127.0.0.1:8000/docs)에서 확인하고 호출할 수 있습니다. 같은 정의를 [OpenAPI JSON](http://127.0.0.1:8000/openapi.json)으로도 제공합니다.
+
+HTTP 함수는 서버 `protocol.py`의 모델을 반환형으로 선언하고 해당 객체를 반환합니다. FastAPI가 이 반환형으로 응답을 검증하고 명세를 만듭니다. 오류 응답도 명세에 포함합니다. 프런트는 `protocol.ts`에 필요한 타입을 직접 선언합니다. HTTP 응답이나 Socket.IO 규약을 바꾸면 서버 코드와 프런트 타입을 함께 수정합니다.
+
+Socket.IO는 `/api/socket.io`에서 WebSocket 전송을 사용합니다. 연결 인증과 대국 이벤트는 OpenAPI에 포함되지 않으므로 아래에 따로 설명합니다.
 
 Socket.IO 연결의 `auth`에 `{ id, token }`을 전달합니다. 토큰은 초대 링크와 서버의 URL 로그에 들어가지 않습니다. 서버는 인증을 마친 뒤 최초 `state`를 보내고 연결을 승인합니다. 프런트는 이 상태를 받아야 대국 입력을 활성화합니다. 인증 실패나 만료된 방은 `connect_error`로 알려주며 자동 재접속을 중단합니다.
 
@@ -208,17 +160,17 @@ Socket.IO 연결의 `auth`에 `{ id, token }`을 전달합니다. 토큰은 초�
 
 `GameSnapshot`은 프런트가 그대로 보관하는 서버 상태입니다. 판 배치는 FEN, 합법 수와 마지막 수는 UCI, 기보는 SAN으로 보냅니다. `chessboard.ts`에서만 UCI를 `Move` 객체로 해석합니다. 무승부 청구는 `python-chess`의 `can_claim_draw()`를 사용하므로 다음 합법적인 수로 조건을 만족하는 경우도 포함합니다.
 
-개발 중에는 Vite가 `/api`의 HTTP와 WebSocket을 FastAPI로 전달합니다. HTTP API 문서에는 Socket.IO 이벤트 규약이 나타나지 않습니다. 통신 규약을 바꾸면 프런트와 백엔드를 함께 업데이트해야 합니다.
-
 ## 검사와 빌드
 
+프로젝트 루트에서:
+
 ```sh
-make check # Svelte/TypeScript 검사
-make build # frontend/dist 생성
-make serve # 빌드된 화면과 API를 FastAPI 하나로 제공
+make check
+make build
+make serve
 ```
 
-빌드 후에는 <http://127.0.0.1:8000>에서 접속합니다. `dist`는 백엔드 시작 시 확인하므로 이미 실행 중인 서버는 빌드 후 재시작하세요. `npm run preview`는 정적 빌드 미리보기만 제공하므로 실제 대국 확인에는 `make serve`를 사용합니다.
+`check`는 Svelte·TypeScript를 검사하고, `build`는 `apps/frontend/dist`를 만듭니다. 두 작업에는 Python이 필요 없습니다. `serve`는 빌드된 화면과 API를 <http://127.0.0.1:8000>에서 함께 제공합니다. `dist`는 백엔드 시작 시 확인하므로 이미 실행 중인 서버는 빌드 후 재시작하세요.
 
 ## 프런트 의존성
 
