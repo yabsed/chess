@@ -1,5 +1,5 @@
 import type {
-  Chat, ChatHistory, Command, ConnectionStatus,
+  Command, ConnectionStatus,
   Game, GameSnapshot, Move,
   ServerMessage, Session,
 } from './types';
@@ -52,9 +52,6 @@ interface ConnectionHandlers {
   onState  : (game: Game) => void;
   onStatus : (status: ConnectionStatus) => void;
   onError  : (message: string) => void;
-
-  onChat?        : (chat: Chat) => void;
-  onChatHistory? : (history: ChatHistory) => void;
 }
 
 export function connect(session: Session, handlers: ConnectionHandlers) {
@@ -88,15 +85,7 @@ export function connect(session: Session, handlers: ConnectionHandlers) {
         retryDelayMs = 500;
         handlers.onStatus('connected');
         handlers.onState(readGame(message.game));
-      } else if (message.type === 'chat') {
-        handlers.onChat?.({
-          id      : message.id,
-          sender  : message.sender,
-          content : message.content,
-        });
-      } else if (message.type === 'chat_history') {
-        handlers.onChatHistory?.(message);
-      } else if (message.type === 'error') {
+      } else {
         handlers.onError(message.message);
       }
     };

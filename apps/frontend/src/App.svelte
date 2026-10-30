@@ -3,21 +3,15 @@
   import GameView    from './lib/GameView.svelte';
 
   import { connect, createGame, joinGame } from './lib/api';
-  import type { Action, Chat, ConnectionStatus, Game, Session } from './lib/types';
+  import type { Action, ConnectionStatus, Game, Session } from './lib/types';
 
   let roomId  = $state(new URLSearchParams(location.search).get('game') ?? '');
   let session = $state<Session | null>(null);
   let game    = $state<Game | null>(null);
-  let chats   = $state<Chat[]>([]);
 
   let connectionStatus = $state<ConnectionStatus>('connecting');
   let awaitingReply    = $state(false);
   let enteringGame     = $state(false);
-
-  const historyPageSize = 20;
-
-  let loadingHistory  = $state(false);
-  let hasEarlierChats = $state(false);
 
   let error  = $state('');
   let notice = $state('');
@@ -32,12 +26,8 @@
     session       = newSession;
     roomId        = newSession.id;
     game          = null;
-    chats         = [];
     awaitingReply = false;
     error         = '';
-
-    loadingHistory  = false;
-    hasEarlierChats = false;
 
     const url = new URL(location.href);
     url.search = new URLSearchParams({ game: roomId }).toString();
@@ -52,30 +42,13 @@
       onStatus(status) {
         connectionStatus = status;
         if (status !== 'connected') {
-          awaitingReply  = false;
-          loadingHistory = false;
+          awaitingReply = false;
         }
       },
 
       onError(message) {
-        error          = message;
-        awaitingReply  = false;
-        loadingHistory = false;
-      },
-
-      onChat(chat) {
-        chats.push(chat);
-      },
-
-      onChatHistory(history) {
-        if (history.before === null) {
-          chats = history.logs;
-        } else {
-          chats = [...history.logs, ...chats];
-        }
-
-        loadingHistory  = false;
-        hasEarlierChats = history.has_more;
+        error         = message;
+        awaitingReply = false;
       },
     });
   }
@@ -145,35 +118,6 @@
     }
   }
 
-  function sendChat(content: string): boolean {
-    if (!client || connectionStatus !== 'connected') return false;
-
-    error = '';
-    const sent = client.send({ type: 'chat', content });
-    if (!sent) {
-      error = 'Check your connection and try again.';
-    }
-    return sent;
-  }
-
-  function loadEarlierChats() {
-    if (!client || connectionStatus !== 'connected' || loadingHistory) return;
-
-    const oldest = chats[0];
-    if (!oldest) return;
-
-    error = '';
-    loadingHistory = client.send({
-      type   : 'chat_history',
-      before : oldest.id,
-      limit  : historyPageSize,
-    });
-
-    if (!loadingHistory) {
-      error = 'Check your connection and try again.';
-    }
-  }
-
   onMount(() => {
     restoreSession();
     return () => client?.close();
@@ -232,9 +176,7 @@
     {#key session.id}
       <GameView {game} color={session.color}
                 {connectionStatus} {awaitingReply} {enteringGame}
-                {chats} {loadingHistory} {hasEarlierChats}
-                onsend={send} onnewgame={create}
-                onsendchat={sendChat} onhistory={loadEarlierChats} />
+                onsend={send} onnewgame={create} />
     {/key}
   {/if}
 

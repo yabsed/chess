@@ -1,9 +1,8 @@
 <script lang="ts">
   import Board       from './Board.svelte';
-  import ChatPanel   from './ChatPanel.svelte';
   import MoveHistory from './MoveHistory.svelte';
 
-  import type { Action, Chat, Color, ConnectionStatus, Game } from './types';
+  import type { Action, Color, ConnectionStatus, Game } from './types';
 
   interface Props {
     game  : Game | null;
@@ -13,23 +12,14 @@
     awaitingReply    : boolean;
     enteringGame     : boolean;
 
-    chats           : Chat[];
-    loadingHistory  : boolean;
-    hasEarlierChats : boolean;
-
     onsend    : (action: Action, move?: string) => void;
     onnewgame : () => void;
-
-    onsendchat : (content: string) => boolean;
-    onhistory  : () => void;
   }
 
   let {
     game, color,
     connectionStatus, awaitingReply, enteringGame,
-    chats, loadingHistory, hasEarlierChats,
     onsend, onnewgame,
-    onsendchat, onhistory,
   }: Props = $props();
 
   const colors: Color[] = ['white', 'black'];
@@ -173,11 +163,6 @@
           <button class="text-button danger" disabled={!canSendCommand} onclick={resign}>Resign</button>
         {/if}
       </section>
-
-      <ChatPanel messages={chats} you={color}
-                 connected={connectionStatus === 'connected'}
-                 {loadingHistory} hasEarlier={hasEarlierChats}
-                 onsend={onsendchat} {onhistory} />
 
       <MoveHistory moves={game.moves} />
     </aside>

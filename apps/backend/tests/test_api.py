@@ -31,12 +31,9 @@ def create(client):
 
 
 @contextmanager
-def connect(client, session, logs = None, has_more = False):
+def connect(client, session):
     with client.websocket_connect(f"/api/games/{session['id']}/ws") as socket:
         socket.send_json({"token": session["token"]})
-        assert socket.receive_json() == {
-            "type": "chat_history", "before": None, "logs": logs or [], "has_more": has_more,
-        }
         yield socket
 
 
@@ -184,9 +181,6 @@ def test_binary_frames_are_rejected_at_the_receive_boundary(client, authenticate
     with client.websocket_connect(f"/api/games/{session['id']}/ws") as socket:
         if authenticated:
             socket.send_json({"token": session["token"]})
-            assert socket.receive_json() == {
-                "type": "chat_history", "before": None, "logs": [], "has_more": False,
-            }
             state(socket)
         socket.send_bytes(b"not a text frame")
         with pytest.raises(WebSocketDisconnect) as error:
@@ -222,103 +216,7 @@ def test_internal_errors_escape_the_socket_handler_and_clean_up(monkeypatch, err
             assert black.send_json.call_args.args[0]["game"]["connected"] == ["black"]
 
             messages = [call.args[0] for call in white.send_json.call_args_list]
-            assert [message["type"] for message in messages] == ["chat_history", "state"]
+            assert all(message["type"] == "state" for message in messages)
             white.close.assert_not_called()
 
     asyncio.run(scenario())
-
-
-def test_chat_delivery_history_and_reconnect_are_independent_of_chess(client):
-    white = create(client)
-    first  = {"id": 1, "sender": "white", "content": "안녕"}
-    second = {"id": 2, "sender": "black", "content": "반가워"}
-    third  = {"id": 3, "sender": "white", "content": "잘 뒀어"}
-
-    with connect(client, white) as w:
-        state(w)
-
-        # Chat is available before the opponent joins.
-        w.send_json({"type": "chat", "content": first["content"]})
-        assert w.receive_json() == {"type": "chat", **first}
-
-        black = client.post(f"/api/games/{white['id']}/join").json()
-        state(w)
-
-        with connect(client, black, logs = [first]) as b:
-            assert state(w) == state(b)
-
-            b.send_json({"type": "chat", "content": second["content"]})
-            assert w.receive_json() == b.receive_json() == {"type": "chat", **second}
-
-            w.send_json({"type": "chat_history", "limit": 1})
-            assert w.receive_json() == {
-                "type": "chat_history", "before": None, "logs": [second], "has_more": True,
-            }
-
-            w.send_json({"type": "chat_history", "before": 2, "limit": 1})
-            assert w.receive_json() == {
-                "type": "chat_history", "before": 2, "logs": [first], "has_more": False,
-            }
-
-            # Neither chat request changes revision or sends a game state to either player.
-            w.send_json({"type": "move", "revision": 0, "move": "e2e4"})
-            current = state(w)
-            assert current == state(b)
-            assert current["revision"] == 1
-            assert current["moves"] == ["e4"]
-
-            b.send_json({"type": "resign", "revision": 1})
-            assert state(w) == state(b)
-
-        assert state(w)["connected"] == ["white"]
-
-        # Messages sent after the game ends and while the opponent is away remain in history.
-        w.send_json({"type": "chat", "content": third["content"]})
-        assert w.receive_json() == {"type": "chat", **third}
-
-        with connect(client, black, logs = [first, second, third]) as b:
-            current = state(b)
-            assert current == state(w)
-            assert current["outcome"] == {"result": "1-0", "reason": "resignation"}
-
-            b.send_json({"type": "chat_history"})
-            assert b.receive_json() == {
-                "type"     : "chat_history",
-                "before"   : None,
-                "logs"     : [first, second, third],
-                "has_more" : False,
-            }
-
-
-def test_chat_pagination_keeps_its_cursor_when_live_messages_arrive(client):
-    white = create(client)
-    black = client.post(f"/api/games/{white['id']}/join").json()
-    logs = [{"id": index, "sender": "white", "content": str(index)} for index in range(1, 26)]
-
-    with connect(client, white) as w:
-        state(w)
-        for chat in logs:
-            w.send_json({"type": "chat", "content": chat["content"]})
-            assert w.receive_json() == {"type": "chat", **chat}
-
-        with connect(client, black, logs = logs[-20:], has_more = True) as b:
-            assert state(w) == state(b)
-
-            b.send_json({"type": "chat_history", "before": 6, "limit": 20})
-            w.send_json({"type": "chat", "content": "new"})
-
-            # Either request may acquire the room lock first; the history boundary is fixed.
-            responses = [b.receive_json(), b.receive_json()]
-            history = next(message for message in responses if message["type"] == "chat_history")
-            live    = next(message for message in responses if message["type"] == "chat")
-
-            assert history == {
-                "type": "chat_history", "before": 6, "logs": logs[:5], "has_more": False,
-            }
-            assert live == {"type": "chat", "id": 26, "sender": "white", "content": "new"}
-            assert w.receive_json() == live
-
-        assert state(w)["connected"] == ["white"]
-        latest = [*logs, {"id": 26, "sender": "white", "content": "new"}]
-        with connect(client, black, logs = latest[-20:], has_more = True) as b:
-            assert state(w) == state(b)
