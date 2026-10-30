@@ -11,7 +11,7 @@ from typing      import Annotated, Literal
 from fastapi  import WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
-from .chat import Chat, ChatLog
+from .chat import ChatLog
 from .game import Action, Color, Game, InvalidAction
 
 SEND_TIMEOUT_SECONDS = 3
@@ -36,8 +36,9 @@ class ChatCommand(BaseModel):
 class ChatHistoryCommand(BaseModel):
     model_config = ConfigDict(extra = "forbid", strict = True)
 
-    type  : Literal["chat_history"]
-    limit : int = Field(default = CHAT_HISTORY_LIMIT, ge = 0)
+    type   : Literal["chat_history"]
+    limit  : int        = Field(default = CHAT_HISTORY_LIMIT, ge = 0)
+    before : int | None = Field(default = None, ge = 1)
 
 
 command_parser = TypeAdapter(Annotated[
@@ -126,7 +127,7 @@ class Room:
 
                 await player.send({
                     "type": "chat_history",
-                    "logs": self._chat.recent(CHAT_HISTORY_LIMIT),
+                    **self._chat.history(CHAT_HISTORY_LIMIT),
                 })
                 await self._broadcast_game()
 
@@ -181,8 +182,7 @@ class Room:
         await self._broadcast_game()
 
     async def _handle_chat(self, color: Color, command: ChatCommand) -> None:
-        chat = Chat(sender = color, content = command.content)
-        self._chat.append(chat)
+        chat = self._chat.append(sender = color, content = command.content)
 
         connected = self.connected
         for player in self._players.values():
@@ -195,7 +195,7 @@ class Room:
         player = self._players[color]
         await player.send({
             "type": "chat_history",
-            "logs": self._chat.recent(command.limit),
+            **self._chat.history(command.limit, before = command.before),
         })
 
         if player.socket is None:

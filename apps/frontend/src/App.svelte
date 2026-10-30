@@ -15,7 +15,6 @@
   let enteringGame     = $state(false);
 
   const historyPageSize = 20;
-  let historyLimit = historyPageSize;
 
   let loadingHistory  = $state(false);
   let hasEarlierChats = $state(false);
@@ -37,7 +36,6 @@
     awaitingReply = false;
     error         = '';
 
-    historyLimit    = historyPageSize;
     loadingHistory  = false;
     hasEarlierChats = false;
 
@@ -56,7 +54,6 @@
         if (status !== 'connected') {
           awaitingReply  = false;
           loadingHistory = false;
-          historyLimit   = historyPageSize;
         }
       },
 
@@ -71,9 +68,14 @@
       },
 
       onChatHistory(history) {
-        chats           = history;
+        if (history.before === null) {
+          chats = history.logs;
+        } else {
+          chats = [...history.logs, ...chats];
+        }
+
         loadingHistory  = false;
-        hasEarlierChats = history.length === historyLimit;
+        hasEarlierChats = history.has_more;
       },
     });
   }
@@ -157,9 +159,15 @@
   function loadEarlierChats() {
     if (!client || connectionStatus !== 'connected' || loadingHistory) return;
 
-    error          = '';
-    historyLimit   = chats.length + historyPageSize;
-    loadingHistory = client.send({ type: 'chat_history', limit: historyLimit });
+    const oldest = chats[0];
+    if (!oldest) return;
+
+    error = '';
+    loadingHistory = client.send({
+      type   : 'chat_history',
+      before : oldest.id,
+      limit  : historyPageSize,
+    });
 
     if (!loadingHistory) {
       error = 'Check your connection and try again.';

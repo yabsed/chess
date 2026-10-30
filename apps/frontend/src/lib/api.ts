@@ -1,5 +1,5 @@
 import type {
-  Chat, Command, ConnectionStatus,
+  Chat, ChatHistory, Command, ConnectionStatus,
   Game, GameSnapshot, Move,
   ServerMessage, Session,
 } from './types';
@@ -54,7 +54,7 @@ interface ConnectionHandlers {
   onError  : (message: string) => void;
 
   onChat?        : (chat: Chat) => void;
-  onChatHistory? : (logs: Chat[]) => void;
+  onChatHistory? : (history: ChatHistory) => void;
 }
 
 export function connect(session: Session, handlers: ConnectionHandlers) {
@@ -89,10 +89,13 @@ export function connect(session: Session, handlers: ConnectionHandlers) {
         handlers.onStatus('connected');
         handlers.onState(readGame(message.game));
       } else if (message.type === 'chat') {
-        handlers.onChat?.({ sender: message.sender, content: message.content });
+        handlers.onChat?.({
+          id      : message.id,
+          sender  : message.sender,
+          content : message.content,
+        });
       } else if (message.type === 'chat_history') {
-        // The server returns newest first; the conversation reads oldest first.
-        handlers.onChatHistory?.([...message.logs].reverse());
+        handlers.onChatHistory?.(message);
       } else if (message.type === 'error') {
         handlers.onError(message.message);
       }

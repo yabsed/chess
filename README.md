@@ -84,6 +84,7 @@ chess/
 │   │   ├── tests/
 │   │   │   ├── test_api.py      # 실제 TestClient 두 개의 통신
 │   │   │   ├── test_room.py     # 동시 요청, 전송 실패, 연결 정리
+│   │   │   ├── test_chat.py     # 메시지 ID와 커서 페이지 경계
 │   │   │   └── test_game.py     # 특수 이동과 승패·무승부 규칙
 │   │   ├── .dockerignore
 │   │   ├── Dockerfile
@@ -135,7 +136,7 @@ chess/
 4. **`api.ts` → `App.svelte`**: `createGame()`과 `joinGame(id)`로 입장 목적을 구분합니다. WebSocket으로 받은 `GameSnapshot`의 UCI 문자열은 `readGame()`에서 한 번 해석해 화면용 `Game`으로 바꿉니다. `onState`, `onStatus`, `onError` 콜백은 App의 `$state`를 갱신합니다. `onMount`는 저장한 자리를 복구하고, 반환한 정리 함수는 연결을 닫습니다. 재접속 간격은 0.5초부터 최대 5초이며 이전 명령은 재전송하지 않습니다.
 5. **`GameView.svelte`**: `$props`로 받은 상태에서 `$derived`로 화면을 계산합니다. `isMyTurn`은 내 차례인지, `canSendCommand`는 명령을 보낼 수 있는지, `canMove`는 지금 수를 둘 수 있는지를 뜻합니다. 사용자 동작은 `onsend`로 App에 전달합니다. 통신과 저장소는 App에서 처리합니다.
 6. **`Board.svelte` → `MoveHistory.svelte`**: 체스판은 `move.from`, `move.to`, `move.promotion`으로 이동을 읽습니다. 좌표·색·라벨과 기보의 백·흑 수를 먼저 계산하고 템플릿에서 표시합니다. 체스판의 선택은 `$state`, 이동 가능한 칸은 `$derived`입니다. `$effect`는 서버 상태가 바뀌면 이전 선택과 승급 창을 지웁니다. 각 화면의 CSS는 해당 컴포넌트의 `<style>`에, 공통 버튼·패널·글꼴은 `app.css`에 있습니다.
-7. **`ChatPanel.svelte`**: 기록·입력·스크롤을 맡습니다. 전송하면 `App.sendChat()`이 요청을 보내고, 서버에서 `chat`을 받았을 때 목록에 추가합니다. 기록은 `api.ts`에서 시간순으로 바꾸며, `App`은 `chat_history`를 받으면 목록을 교체합니다. `Earlier messages`는 조회 개수를 20개씩 늘립니다. 채팅의 전송·조회는 체스의 응답 대기와 독립적입니다.
+7. **`ChatPanel.svelte`**: 기록·입력·스크롤을 맡습니다. 전송하면 `App.sendChat()`이 요청을 보내고, 서버에서 `chat`을 받았을 때 목록 뒤에 추가합니다. 서버는 기록을 시간순으로 보내며, `App`은 첫 조회로 목록을 설정하고 과거 기록은 앞에 붙입니다. `Earlier messages`는 현재 첫 메시지의 ID를 `before`로 보내 그 이전 기록을 최대 20개 가져옵니다. 채팅의 전송·조회는 체스의 응답 대기와 독립적입니다.
 
 예를 들어 `e2`의 폰을 `e4`로 옮기는 흐름은 다음과 같습니다.
 
@@ -202,22 +203,27 @@ WebSocket 연결 후 5초 안에 첫 메시지로 `{"token":"입장할 때 받�
 ```json
 { "type": "chat", "content": "안녕" }
 { "type": "chat_history", "limit": 20 }
+{ "type": "chat_history", "before": 81, "limit": 20 }
 ```
 
-`chat`의 본문은 1~140자이며 발신자·`revision`을 받지 않습니다. `chat_history`의 `limit`은 0 이상의 정수이고 생략하면 20입니다. 0이면 빈 목록, 기록 수보다 크면 전체 기록을 반환합니다. 기록은 최신 메시지부터 나열합니다. 상대가 없거나 대국이 끝나도 채팅과 조회는 가능합니다. 실험 중 사용했던 `isChat`·`amount` 형식은 이 두 요청으로 대체했습니다.
+`chat`의 본문은 1~140자이며 ID·발신자·`revision`을 받지 않습니다. 서버의 `ChatLog`가 저장 순서대로 방 안에서 증가하는 ID를 붙입니다. 상대가 없거나 대국이 끝나도 채팅과 조회는 가능합니다.
+
+`chat_history`의 `before`는 양의 정수 ID입니다. 생략하거나 `null`이면 최근 기록을, 지정하면 그 ID보다 오래된 기록 중 가장 가까운 묶음을 반환합니다. 예를 들어 100개의 메시지가 있으면 첫 조회는 81~100번, `before: 81` 조회는 61~80번을 받습니다. 각 묶음 안에서는 오래된 메시지부터 나열합니다.
+
+`limit`은 0 이상의 정수이고 생략하면 20입니다. 0이면 빈 목록을 반환합니다. 응답의 `before`는 요청한 경계를 그대로 담으며, `has_more`는 이번 묶음보다 오래된 기록이 남아 있는지를 뜻합니다. `limit: 0`일 때도 조회 범위에 기록이 있으면 `has_more`는 참입니다. 메시지는 방이 유지되는 동안 삭제하지 않으므로 새 메시지가 추가되어도 이전 기록의 ID와 조회 경계는 바뀌지 않습니다.
 
 서버 응답은 네 가지입니다.
 
 ```text
 { type: "state", you: "white" | "black", game: { ... } }
-{ type: "chat", sender: "white" | "black", content: "안녕" }
-{ type: "chat_history", logs: [{ sender: "white", content: "안녕" }] }
+{ type: "chat", id: 1, sender: "white", content: "안녕" }
+{ type: "chat_history", before: null, logs: [{ id: 1, sender: "white", content: "안녕" }], has_more: false }
 { type: "error", message: "It is not your turn." }
 ```
 
 `game`의 통신 타입은 `src/lib/types.ts`의 `GameSnapshot`입니다. 서버는 UCI 문자열을 보내고, 프런트의 `Game`은 이를 `Move` 객체로 해석한 타입입니다. 명령 형식이나 대국 조건 때문에 거절한 요청에는 오류와 최신 상태를 보내며 연결을 유지합니다. 바이너리 메시지는 연결을 종료합니다. 무승부 청구 가능 여부는 `python-chess`의 `can_claim_draw()`를 사용하므로 다음 합법적인 수로 청구 조건을 만족하는 경우도 포함합니다.
 
-게임 상태에는 채팅 기록을 포함하지 않습니다. 프런트 연결 모듈의 `send()`로 세 종류의 요청을 보내고, `onChat`·`onChatHistory` 콜백으로 채팅 응답을 받습니다. 사이드바의 채팅 패널은 오래된 메시지부터 표시합니다. 접속·재접속 때 받은 최근 20개로 목록을 복구하고, 이전 기록은 `Earlier messages`로 더 불러옵니다.
+게임 상태에는 채팅 기록을 포함하지 않습니다. 프런트 연결 모듈의 `send()`로 세 종류의 요청을 보내고, `onChat`·`onChatHistory` 콜백으로 채팅 응답을 받습니다. 접속·재접속 때는 `before: null`인 최근 20개로 목록을 복구하고, 이전 기록은 `Earlier messages`로 더 불러옵니다. `has_more`가 거짓이면 버튼을 숨깁니다. 조회 중 실시간 메시지를 받아도 목록 뒤에 추가하고, 나중에 도착한 과거 기록은 앞에 붙입니다.
 
 ## 테스트와 빌드
 
@@ -231,7 +237,7 @@ make serve # 빌드된 화면과 API를 FastAPI 하나로 제공
 
 테스트는 특수 규칙, 잘못된 수, 승패, 인증, 동기화, 잘못된 메시지, 오래된 revision, 연결 교체, 재접속, 방 만료와 용량 제한을 검증합니다. 동시에 들어온 참가 요청·명령의 처리 순서, 전송 실패 시 상대에게 알리는 접속 상태, 내부 예외의 전파와 연결 정리도 확인합니다.
 
-채팅은 발신자 위조·본문 형식 검증, 양쪽 전달 순서, 조회 응답의 수신 범위, 최근 기록과 재접속 복구, 체스 상태와의 독립성을 확인합니다.
+채팅은 ID·발신자 위조·본문 형식 검증, 양쪽 전달 순서, 조회 응답의 수신 범위, 최근 기록과 재접속 복구, 체스 상태와의 독립성을 확인합니다. 커서 경계와 정확히 마지막 페이지인 경우의 `has_more`, 페이지 사이에 새 메시지가 생겨도 누락·중복 없이 과거 기록을 읽는지도 검증합니다.
 
 ## 저장과 실행 범위
 

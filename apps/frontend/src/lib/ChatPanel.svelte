@@ -74,7 +74,7 @@
   <div class="messages" bind:this={messageList}
        role="log" aria-label="Chat messages" aria-relevant="additions"
        tabindex="0" onscroll={trackScroll}>
-    {#each messages as message}
+    {#each messages as message (message.id)}
       <p class="chat-message">
         <strong>{message.sender}{message.sender === you ? ' · You' : ''}</strong>
         <span>{message.content}</span>
