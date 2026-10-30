@@ -61,13 +61,13 @@ export interface ChatHistoryCommand {
 export type Command = GameCommand | ChatCommand | ChatHistoryCommand;
 
 export interface Chat {
-  sender  : Color;
+  sender  : string;
   content : string;
 }
 
 export type ServerMessage =
   | { type: 'state'; you: Color; game: GameSnapshot }
-  | { type: 'chat'; sender: Color; content: string }
+  | { type: 'chat'; sender: string; content: string }
   | { type: 'chat_history'; logs: Chat[] }
   | { type: 'error'; message: string };
 

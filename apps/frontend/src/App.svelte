@@ -3,15 +3,22 @@
   import GameView    from './lib/GameView.svelte';
 
   import { connect, createGame, joinGame } from './lib/api';
-  import type { Action, ConnectionStatus, Game, Session } from './lib/types';
+  import type { Action, Chat, ConnectionStatus, Game, Session } from './lib/types';
 
   let roomId  = $state(new URLSearchParams(location.search).get('game') ?? '');
   let session = $state<Session | null>(null);
   let game    = $state<Game | null>(null);
+  let chats   = $state<Chat[]>([]);
 
   let connectionStatus = $state<ConnectionStatus>('connecting');
   let awaitingReply    = $state(false);
   let enteringGame     = $state(false);
+
+  const historyPageSize = 20;
+  let historyLimit = historyPageSize;
+
+  let loadingHistory  = $state(false);
+  let hasEarlierChats = $state(false);
 
   let error  = $state('');
   let notice = $state('');
@@ -26,8 +33,13 @@
     session       = newSession;
     roomId        = newSession.id;
     game          = null;
+    chats         = [];
     awaitingReply = false;
     error         = '';
+
+    historyLimit    = historyPageSize;
+    loadingHistory  = false;
+    hasEarlierChats = false;
 
     const url = new URL(location.href);
     url.search = new URLSearchParams({ game: roomId }).toString();
@@ -42,13 +54,26 @@
       onStatus(status) {
         connectionStatus = status;
         if (status !== 'connected') {
-          awaitingReply = false;
+          awaitingReply  = false;
+          loadingHistory = false;
+          historyLimit   = historyPageSize;
         }
       },
 
       onError(message) {
-        error         = message;
-        awaitingReply = false;
+        error          = message;
+        awaitingReply  = false;
+        loadingHistory = false;
+      },
+
+      onChat(chat) {
+        chats.push(chat);
+      },
+
+      onChatHistory(history) {
+        chats           = history;
+        loadingHistory  = false;
+        hasEarlierChats = history.length === historyLimit;
       },
     });
   }
@@ -118,6 +143,29 @@
     }
   }
 
+  function sendChat(content: string): boolean {
+    if (!client || connectionStatus !== 'connected') return false;
+
+    error = '';
+    const sent = client.send({ type: 'chat', content });
+    if (!sent) {
+      error = 'Check your connection and try again.';
+    }
+    return sent;
+  }
+
+  function loadEarlierChats() {
+    if (!client || connectionStatus !== 'connected' || loadingHistory) return;
+
+    error          = '';
+    historyLimit   = chats.length + historyPageSize;
+    loadingHistory = client.send({ type: 'chat_history', limit: historyLimit });
+
+    if (!loadingHistory) {
+      error = 'Check your connection and try again.';
+    }
+  }
+
   onMount(() => {
     restoreSession();
     return () => client?.close();
@@ -176,7 +224,9 @@
     {#key session.id}
       <GameView {game} color={session.color}
                 {connectionStatus} {awaitingReply} {enteringGame}
-                onsend={send} onnewgame={create} />
+                {chats} {loadingHistory} {hasEarlierChats}
+                onsend={send} onnewgame={create}
+                onsendchat={sendChat} onhistory={loadEarlierChats} />
     {/key}
   {/if}
 

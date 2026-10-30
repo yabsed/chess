@@ -91,7 +91,8 @@ export function connect(session: Session, handlers: ConnectionHandlers) {
       } else if (message.type === 'chat') {
         handlers.onChat?.({ sender: message.sender, content: message.content });
       } else if (message.type === 'chat_history') {
-        handlers.onChatHistory?.(message.logs);
+        // The server returns newest first; the conversation reads oldest first.
+        handlers.onChatHistory?.([...message.logs].reverse());
       } else if (message.type === 'error') {
         handlers.onError(message.message);
       }
