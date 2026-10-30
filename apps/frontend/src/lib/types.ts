@@ -42,13 +42,32 @@ export interface Game extends Omit<GameSnapshot, 'legal_moves' | 'last_move'> {
   last_move   : Move | null;
 }
 
-export interface Command {
+export interface GameCommand {
   type     : Action;
   revision : number;
   move?    : string;
 }
 
+export interface ChatCommand {
+  type    : 'chat';
+  content : string;
+}
+
+export interface ChatHistoryCommand {
+  type   : 'chat_history';
+  limit? : number;
+}
+
+export type Command = GameCommand | ChatCommand | ChatHistoryCommand;
+
+export interface Chat {
+  sender  : Color;
+  content : string;
+}
+
 export type ServerMessage =
   | { type: 'state'; you: Color; game: GameSnapshot }
+  | { type: 'chat'; sender: Color; content: string }
+  | { type: 'chat_history'; logs: Chat[] }
   | { type: 'error'; message: string };
 

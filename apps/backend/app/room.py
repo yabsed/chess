@@ -4,31 +4,46 @@ import asyncio
 import secrets
 
 from contextlib  import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from time        import monotonic
+from typing      import Annotated, Literal
 
 from fastapi  import WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
+from .chat import Chat, ChatLog
 from .game import Action, Color, Game, InvalidAction
-from .chat import Chat, ChatRoom 
 
 SEND_TIMEOUT_SECONDS = 3
+CHAT_HISTORY_LIMIT   = 20
 
 
-class Command(BaseModel):
+class GameCommand(BaseModel):
     model_config = ConfigDict(extra = "forbid", strict = True)
 
-    isChat   : bool = Field(default = False)
-
-    # chess 
     type     : Action
     revision : int  = Field(ge = 0)
     move     : str  = Field(default = "", max_length = 5)
 
-    # chat 
-    content : str | None = Field(default = None)
-    amount  : int        = Field(default = 0, ge = 0)
+
+class ChatCommand(BaseModel):
+    model_config = ConfigDict(extra = "forbid", strict = True)
+
+    type    : Literal["chat"]
+    content : str = Field(min_length = 1, max_length = 140)
+
+
+class ChatHistoryCommand(BaseModel):
+    model_config = ConfigDict(extra = "forbid", strict = True)
+
+    type  : Literal["chat_history"]
+    limit : int = Field(default = CHAT_HISTORY_LIMIT, ge = 0)
+
+
+command_parser = TypeAdapter(Annotated[
+    GameCommand | ChatCommand | ChatHistoryCommand,
+    Field(discriminator = "type"),
+])
 
 
 class RoomFull(Exception):
@@ -54,13 +69,14 @@ class Player:
 class Room:
     last_activity: float = field(default_factory = monotonic)
 
-    _game     : Game                = field(default_factory = Game,         init = False)
-    _players  : dict[Color, Player] = field(
+    _game : Game    = field(default_factory = Game,    init = False)
+    _chat : ChatLog = field(default_factory = ChatLog, init = False)
+
+    _players: dict[Color, Player] = field(
         default_factory = lambda: {"white": Player()},
         init            = False,
     )
-    _lock     : asyncio.Lock        = field(default_factory = asyncio.Lock, init = False)
-    _chatRoom : ChatRoom            = field(default_factory = ChatRoom,     init = False)
+    _lock: asyncio.Lock = field(default_factory = asyncio.Lock, init = False)
 
     @property
     def white_token(self) -> str:
@@ -79,7 +95,7 @@ class Room:
             self._players["black"] = player
             self.last_activity = monotonic()
 
-            await self._broadcast()
+            await self._broadcast_game()
             return player.token
 
     def authenticate(self, token: str) -> Color | None:
@@ -108,7 +124,11 @@ class Room:
                     except (WebSocketDisconnect, RuntimeError, OSError):
                         pass  # Keep the new connection even if the previous one has already closed.
 
-                await self._broadcast()
+                await player.send({
+                    "type": "chat_history",
+                    "logs": self._chat.recent(CHAT_HISTORY_LIMIT),
+                })
+                await self._broadcast_game()
 
             yield
         finally:
@@ -117,7 +137,7 @@ class Room:
                 if player.socket is socket:
                     player.socket      = None
                     self.last_activity = monotonic()
-                    await self._broadcast()
+                    await self._broadcast_game()
 
     async def handle(self, color: Color, socket: WebSocket, message: str) -> bool:
         async with self._lock:
@@ -125,51 +145,63 @@ class Room:
             if player.socket is not socket:
                 return False
 
-            # Validate the input format and game conditions, then apply the command once.
-            error = None
-            try:
-                command = Command.model_validate_json(message)
-            except ValidationError:
-                error = "Invalid request format."
-            else:
-                try:
-                    if command.isChat:
-                        # Missing content requests history without adding a message.
-                        if command.content is not None:
-                            if not command.content:
-                                raise InvalidAction("Chat messages must not be empty.")
-                            if len(command.content) > 140:
-                                raise InvalidAction("Chat messages must be at most 140 characters.")
-
-                            self._chatRoom.append(Chat(sender = color, content = command.content))
-                    else: 
-                        if command.revision != self._game.revision:
-                            raise InvalidAction("The game has changed. Please try again.")
-                        if len(self._players) < 2:
-                            raise InvalidAction("Please wait for your opponent to join.")
-                        if command.type != "resign" and len(self.connected) < 2:
-                            raise InvalidAction("Please wait for your opponent to reconnect.")
-
-                        self._game.apply(color, command.type, command.move)
-                except InvalidAction as rejection:
-                    error = str(rejection)
-
-            # Validation can fail before command is assigned; handle errors first.
-            if error is not None:
-                await player.send({"type": "error", "message": error})
-            elif command.isChat:
-                await player.send({
-                    "type": "chat_history",
-                    "logs": self._chatRoom.recent_logs(command.amount),
-                })
-
-            # Send the latest state even after a rejection to keep both views synchronised.
             self.last_activity = monotonic()
-            await self._broadcast()
+
+            try:
+                command = command_parser.validate_json(message)
+            except ValidationError:
+                await player.send({"type": "error", "message": "Invalid request format."})
+                await self._broadcast_game()
+                return player.socket is socket
+
+            if isinstance(command, GameCommand):
+                await self._handle_game(color, command)
+            elif isinstance(command, ChatCommand):
+                await self._handle_chat(color, command)
+            elif isinstance(command, ChatHistoryCommand):
+                await self._handle_chat_history(color, command)
+
             return player.socket is socket
 
-    async def _broadcast(self) -> None:
-        # Only call this method from within the room while holding _lock.
+    # The handlers and broadcasts below run with the room's lock held.
+    async def _handle_game(self, color: Color, command: GameCommand) -> None:
+        try:
+            if command.revision != self._game.revision:
+                raise InvalidAction("The game has changed. Please try again.")
+            if len(self._players) < 2:
+                raise InvalidAction("Please wait for your opponent to join.")
+            if command.type != "resign" and len(self.connected) < 2:
+                raise InvalidAction("Please wait for your opponent to reconnect.")
+
+            self._game.apply(color, command.type, command.move)
+        except InvalidAction as rejection:
+            await self._players[color].send({"type": "error", "message": str(rejection)})
+
+        # Send the latest state even after a rejection to keep both views synchronised.
+        await self._broadcast_game()
+
+    async def _handle_chat(self, color: Color, command: ChatCommand) -> None:
+        chat = Chat(sender = color, content = command.content)
+        self._chat.append(chat)
+
+        connected = self.connected
+        for player in self._players.values():
+            await player.send({"type": "chat", **asdict(chat)})
+
+        if connected != self.connected:
+            await self._broadcast_game()
+
+    async def _handle_chat_history(self, color: Color, command: ChatHistoryCommand) -> None:
+        player = self._players[color]
+        await player.send({
+            "type": "chat_history",
+            "logs": self._chat.recent(command.limit),
+        })
+
+        if player.socket is None:
+            await self._broadcast_game()
+
+    async def _broadcast_game(self) -> None:
         while self.connected:
             state = {
                 **self._game.snapshot(),
@@ -178,12 +210,7 @@ class Room:
             }
 
             for color, player in self._players.items():
-                await player.send({
-                    "type": "state", 
-                    "you": color, 
-                    "game": state,
-                    "logs": self._chatRoom.recent_logs(5),
-                })
+                await player.send({"type": "state", "you": color, "game": state})
 
             if state["connected"] == self.connected:
                 break

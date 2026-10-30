@@ -105,7 +105,12 @@ def test_simultaneous_commands_apply_one_move_and_resync_the_other():
     asyncio.run(scenario())
 
 
-def test_replaced_socket_cannot_issue_commands():
+@pytest.mark.parametrize("message", [
+    '{"type":"move","revision":0,"move":"e2e4"}',
+    '{"type":"chat","content":"hello"}',
+    '{"type":"chat_history"}',
+])
+def test_replaced_socket_cannot_issue_commands(message):
     async def scenario():
         room = Room()
         await room.join()
@@ -115,11 +120,15 @@ def test_replaced_socket_cannot_issue_commands():
 
         async with room.connect("black", black), room.connect("white", first):
             async with room.connect("white", replacement):
-                accepted = await room.handle(
-                    "white", first, '{"type":"move","revision":0,"move":"e2e4"}'
-                )
+                replacement.send_json.reset_mock()
+                black.send_json.reset_mock()
+
+                accepted = await room.handle("white", first, message)
                 assert not accepted
-                assert black.send_json.call_args.args[0]["game"]["revision"] == 0
+                replacement.send_json.assert_not_called()
+                black.send_json.assert_not_called()
+                assert room._game.revision == 0
+                assert room._chat.recent(20) == []
 
     asyncio.run(scenario())
 
@@ -128,15 +137,19 @@ def test_replaced_socket_cannot_issue_commands():
     "not json",
     "[]",
     '{"isChat":true,"content":"hello"}',
-    *[
-        json.dumps({"type": "move", "revision": 0, "isChat": True, **fields})
-        for fields in [
-            {"content": "hello", "amount": -1},
-            {"content": ""},
-            {"content": "x" * 141},
-            {"content": 123},
-        ]
-    ],
+    '{"type":"unknown"}',
+    '{"type":"move","revision":0,"isChat":true,"content":"hello"}',
+    '{"type":"chat"}',
+    '{"type":"chat","content":""}',
+    '{"type":"chat","content":null}',
+    '{"type":"chat","content":123}',
+    '{"type":"chat","content":"hello","sender":"black"}',
+    '{"type":"chat","content":"hello","revision":0}',
+    json.dumps({"type": "chat", "content": "x" * 141}),
+    '{"type":"chat_history","limit":-1}',
+    '{"type":"chat_history","limit":true}',
+    '{"type":"chat_history","limit":"20"}',
+    '{"type":"chat_history","content":"hello"}',
 ])
 def test_rejected_messages_report_errors_without_mutating_chat_or_closing_connection(message):
     async def scenario():
@@ -154,10 +167,8 @@ def test_rejected_messages_report_errors_without_mutating_chat_or_closing_connec
             responses = [call.args[0] for call in white.send_json.call_args_list]
             assert [response["type"] for response in responses] == ["error", "state"]
             assert responses[0]["message"]
-            assert responses[1]["logs"] == []
             assert responses[1]["game"]["revision"] == 0
-            assert black.send_json.call_args.args[0]["logs"] == []
-            assert room._chatRoom.logs == []
+            assert room._chat.recent(20) == []
 
             # A rejected message must leave the same connection usable for chess.
             assert await room.handle(
@@ -177,53 +188,110 @@ def test_chat_reaches_both_players_without_changing_game_state(color):
         black = AsyncMock(spec = WebSocket)
         sockets = {"white": white, "black": black}
         content = "x" * 140
-        expected_logs = [{"sender": color, "content": content}]
+        expected = {"type": "chat", "sender": color, "content": content}
 
         async with room.connect("white", white), room.connect("black", black):
-            before = white.send_json.call_args.args[0]["game"]
+            before = room._game.snapshot()
             white.send_json.reset_mock()
             black.send_json.reset_mock()
 
             assert await room.handle(color, sockets[color], json.dumps({
-                "type": "move", "revision": 0, "isChat": True,
-                "content": content, "amount": 5,
+                "type": "chat", "content": content,
             }))
 
-            for recipient, socket in sockets.items():
-                responses = [call.args[0] for call in socket.send_json.call_args_list]
-                expected_types = ["chat_history", "state"] if recipient == color else ["state"]
-                assert [response["type"] for response in responses] == expected_types
-                assert all(response["logs"] == expected_logs for response in responses)
-                assert responses[-1]["game"] == before
-            assert len(room._chatRoom.logs) == 1
+            white.send_json.assert_awaited_once_with(expected)
+            black.send_json.assert_awaited_once_with(expected)
+            assert room._game.snapshot() == before
+            assert room._chat.recent(20) == [{"sender": color, "content": content}]
 
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("content_fields", [{}, {"content": None}])
-@pytest.mark.parametrize("amount", [0, 1, 20])
-def test_chat_history_requests_do_not_append_messages(content_fields, amount):
+@pytest.mark.parametrize("limit", [0, 1, 100, None])
+def test_chat_history_replies_only_to_requester_without_appending_messages(limit):
     async def scenario():
         room = Room()
-        socket = AsyncMock(spec = WebSocket)
-        command = {"type": "move", "revision": 0, "isChat": True}
+        await room.join()
+        white = AsyncMock(spec = WebSocket)
+        black = AsyncMock(spec = WebSocket)
+        logs = [{"sender": "white", "content": str(index)} for index in range(25)]
+        request = {"type": "chat_history"}
+        if limit is not None:
+            request["limit"] = limit
 
-        async with room.connect("white", socket):
-            for content in ["first", "second"]:
-                await room.handle("white", socket, json.dumps({**command, "content": content}))
-            socket.send_json.reset_mock()
+        async with room.connect("white", white), room.connect("black", black):
+            for chat in logs:
+                await room.handle("white", white, json.dumps({"type": "chat", "content": chat["content"]}))
+            white.send_json.reset_mock()
+            black.send_json.reset_mock()
 
-            assert await room.handle("white", socket, json.dumps({
-                **command, "amount": amount, **content_fields,
-            }))
+            assert await room.handle("black", black, json.dumps(request))
 
-            responses = [call.args[0] for call in socket.send_json.call_args_list]
-            assert [response["type"] for response in responses] == ["chat_history", "state"]
-            assert responses[0]["logs"] == [
-                {"sender": "white", "content": "second"},
-                {"sender": "white", "content": "first"},
-            ][:amount]
-            assert len(room._chatRoom.logs) == 2
-            assert responses[1]["game"]["revision"] == 0
+            expected_limit = 20 if limit is None else limit
+            black.send_json.assert_awaited_once_with({
+                "type": "chat_history", "logs": logs[::-1][:expected_limit],
+            })
+            white.send_json.assert_not_called()
+            assert room._chat.recent(100) == logs[::-1]
+            assert room._game.revision == 0
+
+    asyncio.run(scenario())
+
+
+def test_simultaneous_chats_reach_both_players_in_the_same_order():
+    async def scenario():
+        room = Room()
+        await room.join()
+        white = AsyncMock(spec = WebSocket)
+        black = AsyncMock(spec = WebSocket)
+
+        async with room.connect("white", white), room.connect("black", black):
+            white.send_json.reset_mock()
+            black.send_json.reset_mock()
+
+            await asyncio.gather(
+                room.handle("white", white, '{"type":"chat","content":"hello"}'),
+                room.handle("black", black, '{"type":"chat","content":"hi"}'),
+            )
+
+            received = [call.args[0] for call in white.send_json.call_args_list]
+            assert received == [call.args[0] for call in black.send_json.call_args_list]
+            assert len(received) == 2
+            assert {message["sender"] for message in received} == {"white", "black"}
+            assert all(message["type"] == "chat" for message in received)
+            assert room._chat.recent(20) == [
+                {"sender": message["sender"], "content": message["content"]}
+                for message in reversed(received)
+            ]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("command, disconnected_color", [
+    ({"type": "chat", "content": "hello"}, "white"),
+    ({"type": "chat", "content": "hello"}, "black"),
+    ({"type": "chat_history"}, "white"),
+])
+def test_chat_send_failure_updates_the_remaining_players_connection_state(command, disconnected_color):
+    async def scenario():
+        room = Room()
+        await room.join()
+        white = AsyncMock(spec = WebSocket)
+        black = AsyncMock(spec = WebSocket)
+        sockets = {"white": white, "black": black}
+
+        async with room.connect("white", white), room.connect("black", black):
+            white.send_json.reset_mock()
+            black.send_json.reset_mock()
+            sockets[disconnected_color].send_json.side_effect = OSError("connection lost")
+
+            still_connected = await room.handle("white", white, json.dumps(command))
+
+            remaining_color = "black" if disconnected_color == "white" else "white"
+            remaining = sockets[remaining_color]
+            latest_state = remaining.send_json.call_args.args[0]["game"]
+            assert latest_state["connected"] == [remaining_color]
+            assert latest_state["revision"] == 0
+            assert still_connected == (disconnected_color != "white")
 
     asyncio.run(scenario())

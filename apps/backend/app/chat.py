@@ -1,31 +1,28 @@
-from dataclasses import dataclass, field, asdict 
-from typing      import Literal 
+"""Store chat messages and return recent history, newest first."""
 
-Color = Literal["white", "black"]
+from dataclasses import asdict, dataclass, field
 
-@dataclass 
+
+@dataclass
 class Chat:
-    sender  : Color | None = None
-    content : str          = ""
+    sender  : str
+    content : str
 
 
-@dataclass 
-class ChatRoom: 
+@dataclass
+class ChatLog:
+    logs: list[Chat] = field(default_factory = list)
 
-    logs : list[Chat] = field(default_factory=list)
-
-
-    def recent_logs(self, n: int) -> list[dict[str, str | None]]:
-        if n < 0:
-            raise ValueError("n must be non-negative")
-
-        return [
-            asdict(chat)
-            for chat in self.logs[-1 : -n - 1 : -1]
-        ]
-
-    def append(self, chat: Chat): 
+    def append(self, chat: Chat) -> None:
         self.logs.append(chat)
 
+    def recent(self, limit: int) -> list[dict[str, str]]:
+        if limit < 0:
+            raise ValueError("limit must be non-negative")
+        if limit == 0:
+            return []
 
-    
+        return [
+            asdict(chat) 
+            for chat in reversed(self.logs[-limit:])
+        ]
