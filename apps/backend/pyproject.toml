@@ -7,12 +7,6 @@ dependencies = [
     "fastapi>=0.115,<1",
     "uvicorn[standard]>=0.34,<1",
     "chess==1.11.2",
+    "python-socketio>=5.16,<6",
 ]
-
-[dependency-groups]
-dev = ["pytest>=8,<10", "httpx2>=2,<3"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["."]
 

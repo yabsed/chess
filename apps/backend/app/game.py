@@ -93,11 +93,6 @@ class Game:
             self.draw_offer = None  # Making a move declines the opponent's draw offer.
 
     def snapshot(self) -> dict:
-        pieces = {}
-        for square, piece in self.board.piece_map().items():
-            square_name = chess.square_name(square)
-            pieces[square_name] = piece.symbol()
-
         last_move = self.board.peek().uci() if self.board.move_stack else None
 
         king_square  = self.board.king(self.board.turn)
@@ -115,7 +110,7 @@ class Game:
 
         return {
             "revision"    : self.revision,
-            "board"       : pieces,
+            "fen"         : self.board.fen(),
             "turn"        : self.turn,
             "legal_moves" : legal_moves,
 

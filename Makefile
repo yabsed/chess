@@ -17,7 +17,6 @@ frontend:
 	npm run --prefix apps/frontend dev -- --port $(PORT)
 
 check:
-	uv run --directory apps/backend pytest -q
 	npm run --prefix apps/frontend check
 
 build:

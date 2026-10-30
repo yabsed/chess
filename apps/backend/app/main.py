@@ -1,6 +1,5 @@
-"""Handle joins over HTTP and route incoming WebSocket messages to the relevant room."""
+"""Handle HTTP joins and route Socket.IO events to the relevant room."""
 
-import asyncio
 import secrets
 
 from pathlib import Path
@@ -8,26 +7,28 @@ from time    import monotonic
 from typing  import Annotated
 
 from fastapi             import FastAPI, HTTPException, Path as PathParam
-from fastapi             import WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from pydantic            import BaseModel, ConfigDict, Field, ValidationError
+from socketio            import ASGIApp
+from socketio.exceptions import ConnectionRefusedError
 
-from .room import Room, RoomFull
+from .room import Room, RoomFull, sio
 
 
-app = FastAPI(title = "Small Chess")
+api = FastAPI(title = "Small Chess")
+app = ASGIApp(sio, api, socketio_path = "api/socket.io", on_shutdown = sio.shutdown)
 
 RoomId = Annotated[str, PathParam(pattern = r"^[a-f0-9]{12}$")]
 
-ROOM_TTL_SECONDS     = 24 * 60 * 60
-MAX_ROOMS            = 500
-AUTH_TIMEOUT_SECONDS = 5
+ROOM_TTL_SECONDS = 24 * 60 * 60
+MAX_ROOMS        = 500
 
 
 class Auth(BaseModel):
     model_config = ConfigDict(extra = "forbid", strict = True)
 
-    token: str = Field(min_length = 1, max_length = 100)
+    id    : str = Field(pattern = r"^[a-f0-9]{12}$")
+    token : str = Field(min_length = 1, max_length = 100)
 
 
 rooms: dict[str, Room] = {}
@@ -51,12 +52,12 @@ def get_room(room_id: str) -> Room:
     return rooms[room_id]
 
 
-@app.get("/api/health")
+@api.get("/api/health")
 async def health():
     return {"status": "ok"}
 
 
-@app.post("/api/games", status_code = 201)
+@api.post("/api/games", status_code = 201)
 async def create_game():
     clean_rooms()
     if len(rooms) >= MAX_ROOMS:
@@ -66,13 +67,13 @@ async def create_game():
     while room_id in rooms:
         room_id = secrets.token_hex(6)
 
-    room = Room()
+    room = Room(room_id)
     rooms[room_id] = room
 
     return {"id": room_id, "token": room.white_token, "color": "white"}
 
 
-@app.post("/api/games/{room_id}/join")
+@api.post("/api/games/{room_id}/join")
 async def join_game(room_id: RoomId):
     room = get_room(room_id)
 
@@ -84,49 +85,46 @@ async def join_game(room_id: RoomId):
     return {"id": room_id, "token": token, "color": "black"}
 
 
-@app.websocket("/api/games/{room_id}/ws")
-async def play(socket: WebSocket, room_id: RoomId):
-    await socket.accept()
+@sio.event
+async def connect(sid, environ, auth):
+    # Auth travels in the connection payload, keeping tokens out of URLs.
+    try:
+        auth = Auth.model_validate(auth)
+    except ValidationError:
+        raise ConnectionRefusedError("Your session is invalid.") from None
 
     try:
-        room = get_room(room_id)
-    except HTTPException:
-        await socket.close(4404, "This game does not exist or has expired.")
-        return
-
-    # Keep tokens out of URLs so they do not appear in server URL logs or invitation links.
-    try:
-        raw  = await asyncio.wait_for(socket.receive_text(), timeout = AUTH_TIMEOUT_SECONDS)
-        auth = Auth.model_validate_json(raw)
-    except WebSocketDisconnect:
-        return
-    except (ValidationError, TimeoutError, KeyError):
-        await socket.close(4401, "Your session is invalid.")
-        return
+        room = get_room(auth.id)
+    except HTTPException as error:
+        raise ConnectionRefusedError(error.detail) from None
 
     color = room.authenticate(auth.token)
     if color is None:
-        await socket.close(4401, "Your session is invalid.")
-        return
+        raise ConnectionRefusedError("Your session is invalid.")
 
-    async with room.connect(color, socket):
-        while True:
-            # Only socket errors end the connection here; let internal room exceptions propagate.
-            try:
-                message = await socket.receive_text()
-            except (WebSocketDisconnect, RuntimeError, OSError):
-                break
-            except KeyError:  # receive_text received a binary frame.
-                await socket.close(1003, "Only JSON text messages are supported.")
-                break
+    await sio.save_session(sid, {"room": room, "color": color})
+    await room.connect(color, sid)
 
-            still_connected = await room.handle(color, socket, message)
-            if not still_connected:
-                break
+
+@sio.event
+async def command(sid, data):
+    session = await sio.get_session(sid)
+    try:
+        return await session["room"].handle(session["color"], sid, data)
+    except Exception:
+        await sio.disconnect(sid)
+        raise  # Internal errors must reach the server log, not become game rejections.
+
+
+@sio.event
+async def disconnect(sid, reason):
+    session = await sio.get_session(sid)
+    if session:
+        await session["room"].disconnect(session["color"], sid)
 
 
 # Serve the built frontend through FastAPI as well. Register it after the API routes.
 frontend = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
 if frontend.is_dir():
-    app.mount("/", StaticFiles(directory = frontend, html = True), name = "frontend")
+    api.mount("/", StaticFiles(directory = frontend, html = True), name = "frontend")
