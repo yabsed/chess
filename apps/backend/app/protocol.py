@@ -11,7 +11,8 @@ RoomId = Annotated[str, Field(pattern = r"^[a-f0-9]{12}$")]
 
 
 class Health(BaseModel):
-    status: Literal["ok"]
+    status  : Literal["ok"]
+    service : Literal["chess"] = "chess"
 
 
 class Seat(BaseModel):
