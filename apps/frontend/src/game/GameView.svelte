@@ -41,7 +41,7 @@
 
   function playerStatus(player: Color) {
     if (game?.connected.includes(player)) return 'Online';
-    if (game?.joined.includes(player))    return 'Offline';
+    if (game?.players[player])            return 'Offline';
 
     return 'Not joined';
   }
@@ -109,7 +109,19 @@
 
         {#each colors as player}
           <p class="row">
-            <strong>{colorNames[player]}{player === color ? ' · You' : ''}</strong>
+            <span class="identity">
+              <span class="avatar">
+                {#if game.players[player]?.avatar}
+                  <img src={game.players[player]?.avatar ?? ''} alt="" />
+                {:else}
+                  {game.players[player]?.username[0].toUpperCase() ?? '?'}
+                {/if}
+              </span>
+              <span>
+                <strong>{game.players[player]?.username ?? 'Waiting…'}</strong><br />
+                <small>{colorNames[player]}{player === color ? ' · You' : ''}</small>
+              </span>
+            </span>
             <small>{playerStatus(player)}</small>
           </p>
         {/each}
@@ -121,13 +133,13 @@
             onclick={(event) => event.currentTarget.select()}
           />
           <button onclick={copyLink}>Copy invite link</button>
+          <button class="secondary" disabled={!room.canSend} onclick={() => room.enter('cancel')}>Cancel game</button>
         {/if}
 
         {#if game.outcome}
           <p>{game.outcome.result} · {endReasons[game.outcome.reason] ?? game.outcome.reason}</p>
-          <button disabled={room.entering} onclick={() => room.create()}>
-            New game
-          </button>
+          <button disabled={!room.canSend} onclick={() => room.enter('match')}>Find opponent</button>
+          <button class="secondary" disabled={!room.canSend} onclick={() => room.enter('create')}>Invite a friend</button>
         {:else if room.inProgress}
           <div class="commands">
             {#if room.drawOfferedToMe}

@@ -8,6 +8,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev --no-cache --no-install-project
 
 COPY app ./app
+RUN mkdir /app/data && chown 10001:10001 /app/data
 USER 10001:10001
 
 EXPOSE 8000

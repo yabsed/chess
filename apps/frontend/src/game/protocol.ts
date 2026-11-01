@@ -1,9 +1,19 @@
 export type Color = 'white' | 'black';
 
-export interface Session {
+export interface Seat {
   id    : string;
-  token : string;
   color : Color;
+}
+
+export interface User {
+  id       : number;
+  username : string;
+  avatar   : string | null;
+}
+
+export interface Entry {
+  type : 'create' | 'join' | 'match' | 'cancel';
+  id?  : string;
 }
 
 export interface GameSnapshot {
@@ -20,7 +30,7 @@ export interface GameSnapshot {
   draw_offer     : Color | null;
   can_claim_draw : boolean;
 
-  joined    : Color[];
+  players   : Partial<Record<Color, User>>;
   connected : Color[];
 }
 
@@ -44,10 +54,13 @@ export interface CommandReply {
 }
 
 export interface ClientEvents {
-  command: (command: Command, reply: (result: CommandReply) => void) => void;
+  enter   : (entry  : Entry,   reply: (result: CommandReply) => void) => void;
+  command : (command: Command, reply: (result: CommandReply) => void) => void;
 }
 
 export interface ServerEvents {
+  seat           : (seat   : Seat | null)  => void;
+  waiting        : (waiting: boolean)      => void;
   state          : (game   : GameSnapshot) => void;
   session_closed : (message: string)       => void;
 }

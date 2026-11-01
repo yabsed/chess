@@ -14,23 +14,35 @@ class Health(BaseModel):
     status: Literal["ok"]
 
 
-class Session(BaseModel):
-    """A reserved seat. Keep its token to reconnect after a refresh."""
+class Seat(BaseModel):
+    """A seat owned by the signed-in user."""
 
     id    : RoomId
-    token : str
     color : Color
-
-
-class ApiError(BaseModel):
-    detail: str
 
 
 class Auth(BaseModel):
     model_config = ConfigDict(extra = "forbid", strict = True)
 
-    id    : RoomId
-    token : str = Field(min_length = 1, max_length = 100)
+    id: RoomId | None = None
+
+
+class User(BaseModel):
+    id       : int
+    username : str
+    avatar   : str | None
+
+
+class Credentials(BaseModel):
+    username : str = Field(pattern = r"^[a-zA-Z0-9_]{3,24}$")
+    password : str = Field(min_length = 8, max_length = 128)
+
+
+class Entry(BaseModel):
+    model_config = ConfigDict(extra = "forbid", strict = True)
+
+    type : Literal["create", "join", "match", "cancel"]
+    id   : RoomId | None = None
 
 
 class Command(BaseModel):
