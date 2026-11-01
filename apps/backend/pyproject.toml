@@ -10,3 +10,8 @@ dependencies = [
     "python-socketio>=5.16,<6",
 ]
 
+[dependency-groups]
+dev = [
+    "python-socketio[client]>=5.16,<6",
+]
+
