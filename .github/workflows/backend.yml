@@ -1,0 +1,48 @@
+name: Deploy backend
+
+on:
+  push:
+    branches: [main]
+    paths: [apps/backend/**, compose.yaml, Caddyfile, .github/workflows/backend.yml]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: backend-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DEPLOY_HOST: 15.134.45.45
+
+    steps:
+      - name: Deploy over SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          umask 077
+          printf '%s\n' "${SSH_PRIVATE_KEY:?Set SSH_PRIVATE_KEY in repository secrets}" > "$RUNNER_TEMP/deploy_key"
+          printf '%s\n' "${SSH_KNOWN_HOSTS:?Set SSH_KNOWN_HOSTS in repository secrets}" > "$RUNNER_TEMP/known_hosts"
+
+          ssh -i "$RUNNER_TEMP/deploy_key" \
+            -o BatchMode=yes -o ConnectTimeout=15 \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
+            "admin@$DEPLOY_HOST" 'bash -se' <<'SH'
+          cd "$HOME/chess"
+          git pull --ff-only origin main
+          sudo -n docker compose up -d --build --force-recreate
+          SH
+
+      - name: Check deployed server
+        run: |
+          curl --fail --silent --show-error \
+            --retry 12 --retry-delay 5 --retry-all-errors \
+            --connect-timeout 5 --max-time 10 \
+            "https://$DEPLOY_HOST/api/health"
