@@ -1,0 +1,13 @@
+{
+  default_sni {$CHESS_IP}
+}
+
+https://{$CHESS_IP} {
+  tls {
+    issuer acme {
+      profile shortlived
+    }
+  }
+
+  reverse_proxy backend:8000
+}

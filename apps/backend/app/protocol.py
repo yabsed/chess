@@ -24,13 +24,19 @@ class Seat(BaseModel):
 class Auth(BaseModel):
     model_config = ConfigDict(extra = "forbid", strict = True)
 
-    id: RoomId | None = None
+    token : str = Field(min_length = 43, max_length = 43)
+    id    : RoomId | None = None
 
 
 class User(BaseModel):
     id       : int
     username : str
     avatar   : str | None
+
+
+class Session(BaseModel):
+    user  : User
+    token : str
 
 
 class Credentials(BaseModel):

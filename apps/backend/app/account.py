@@ -1,22 +1,21 @@
-"""Accounts, cookie sessions and small avatars share one SQLite file."""
+"""Accounts, token sessions and small avatars share one SQLite file."""
 
 import hashlib
 import os
 import secrets
 import sqlite3
 
-from contextlib   import contextmanager
-from http.cookies import CookieError, SimpleCookie
-from io           import BytesIO
-from pathlib      import Path
-from time         import monotonic, time
+from contextlib import contextmanager
+from io         import BytesIO
+from pathlib    import Path
+from time       import monotonic, time
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from PIL     import Image, ImageOps, UnidentifiedImageError
 from pwdlib  import PasswordHash
 from starlette.concurrency import run_in_threadpool
 
-from .protocol import Credentials, User
+from .protocol import Credentials, Session, User
 
 
 router   = APIRouter(prefix = "/api")
@@ -67,15 +66,13 @@ def user_from(row) -> User:
     return User(id = row["id"], username = row["username"], avatar = avatar)
 
 
-def session_key(cookies: str) -> str:
-    parsed = SimpleCookie()
-    try:
-        parsed.load(cookies)
-    except CookieError:
-        return ""
+def session_key(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
 
-    token = parsed.get("chess_session")
-    return hashlib.sha256(token.value.encode()).hexdigest() if token else ""
+
+def request_key(request: Request) -> str:
+    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+    return session_key(token) if scheme.lower() == "bearer" else ""
 
 
 def find_user(key: str) -> User | None:
@@ -89,16 +86,11 @@ def find_user(key: str) -> User | None:
 
 
 async def current_user(request: Request) -> User:
-    key  = session_key(request.headers.get("cookie", ""))
+    key  = request_key(request)
     user = await run_in_threadpool(find_user, key)
     if user is None:
         raise HTTPException(401, "Please sign in again.")
     return user
-
-
-def origin_allowed(origin: str | None, scheme: str, host: str) -> bool:
-    expected = os.getenv("CHESS_ORIGIN", f"{scheme}://{host}")
-    return origin == expected
 
 
 def limit_attempts(request: Request) -> None:
@@ -139,7 +131,7 @@ def sign_in(credentials: Credentials, register: bool) -> tuple[User, str]:
                 raise HTTPException(401, "Incorrect username or password.")
 
         token = secrets.token_urlsafe(32)
-        key   = hashlib.sha256(token.encode()).hexdigest()
+        key   = session_key(token)
         now   = int(time())
 
         db.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
@@ -149,24 +141,19 @@ def sign_in(credentials: Credentials, register: bool) -> tuple[User, str]:
 
 @router.post("/register", status_code = 201)
 @router.post("/session")
-async def login(credentials: Credentials, request: Request, response: Response) -> User:
+async def login(credentials: Credentials, request: Request, response: Response) -> Session:
     limit_attempts(request)
     register = request.url.path == "/api/register"
     user, token = await run_in_threadpool(sign_in, credentials, register)
 
-    secure = os.getenv("CHESS_ORIGIN", str(request.base_url)).startswith("https://")
-    response.set_cookie(
-        "chess_session", token, max_age = SESSION_AGE,
-        httponly = True, secure = secure, samesite = "strict",
-    )
     response.headers["Cache-Control"] = "no-store"
-    return user
+    return Session(user = user, token = token)
 
 
 @router.get("/me")
 async def me(request: Request, response: Response) -> User | None:
     response.headers["Cache-Control"] = "no-store"
-    key = session_key(request.headers.get("cookie", ""))
+    key = request_key(request)
     return await run_in_threadpool(find_user, key)
 
 

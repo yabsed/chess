@@ -1,4 +1,5 @@
 import { io } from 'socket.io-client';
+import { backend, token } from '../http';
 
 import type { Socket } from 'socket.io-client';
 import type { Action, ClientEvents, CommandReply, Entry, GameSnapshot, Seat, ServerEvents } from './protocol';
@@ -48,10 +49,10 @@ export class Room {
     this.error      = '';
     this.connection = 'connecting';
 
-    const socket: GameSocket = io({
+    const socket: GameSocket = io(backend, {
       path                 : '/api/socket.io',
       transports           : ['websocket'],
-      auth                 : { id: this.validInvite ? this.id : null },
+      auth                 : (reply) => reply({ token, id: this.validInvite ? this.id : null }),
       reconnectionDelay    : 500,
       reconnectionDelayMax : 5000,
       timeout              : 10000,
@@ -99,7 +100,6 @@ export class Room {
 
   private setId(id: string) {
     this.id = id;
-    if (this.socket) this.socket.auth = { id: id || null };
 
     const url = new URL(location.href);
     url.search = id ? new URLSearchParams({ game: id }).toString() : '';

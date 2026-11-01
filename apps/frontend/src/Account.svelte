@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { http } from './http';
+  import { backend, http, setToken } from './http';
   import type { User } from './game/protocol';
 
   let { user, onuser }: { user: User | null; onuser: (user: User | null) => void } = $props();
@@ -17,7 +17,11 @@
     error = '';
     try {
       const path = registering ? 'register' : 'session';
-      onuser(await http.post(path, { json: { username, password } }).json<User>());
+      const session = await http.post(path, { json: { username, password } })
+        .json<{ user: User; token: string }>();
+
+      setToken(session.token);
+      onuser(session.user);
       password = '';
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Unable to sign in.';
@@ -31,6 +35,7 @@
     error = '';
     try {
       await http.delete('session');
+      setToken('');
       onuser(null);
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Unable to sign out.';
@@ -68,7 +73,7 @@
     <div class="identity">
       <button class="avatar" disabled={busy} onclick={() => picker?.click()} aria-label="Change profile picture">
         {#if user.avatar}
-          <img src={user.avatar} alt="" />
+          <img src={backend + user.avatar} alt="" />
         {:else}
           {user.username[0].toUpperCase()}
         {/if}

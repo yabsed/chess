@@ -1,28 +1,38 @@
 """Sign in over HTTP; enter, match and play through one Socket.IO connection."""
 
 import asyncio
+import os
 import secrets
 
-from pathlib import Path
-from time    import monotonic
+from time import monotonic
 
-from fastapi               import FastAPI, HTTPException, Request, Response
-from fastapi.responses     import JSONResponse
-from fastapi.staticfiles   import StaticFiles
-from pydantic              import ValidationError
-from socketio              import ASGIApp, AsyncServer
-from socketio.exceptions   import ConnectionRefusedError
-from starlette.concurrency import run_in_threadpool
+from fastapi                 import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic                import ValidationError
+from socketio                import ASGIApp, AsyncServer
+from socketio.exceptions     import ConnectionRefusedError
+from starlette.concurrency   import run_in_threadpool
 
 from . import account
 from .protocol import Auth, Entry, Health, User
 from .room     import Room, RoomFull
 
 
+ORIGIN = os.getenv("CHESS_ORIGIN", "http://127.0.0.1:5174")
+
 api = FastAPI(title = "Small Chess")
 api.include_router(account.router)
+api.add_middleware(
+    CORSMiddleware,
+    allow_origins = [ORIGIN],
+    allow_methods = ["GET", "POST", "PUT", "DELETE"],
+    allow_headers = ["Authorization", "Content-Type"],
+)
 
-sio = AsyncServer(async_mode = "asgi", async_handlers = False, max_http_buffer_size = 4096)
+sio = AsyncServer(
+    async_mode = "asgi", async_handlers = False, max_http_buffer_size = 4096,
+    cors_allowed_origins = [ORIGIN], cors_credentials = False,
+)
 app = ASGIApp(
     sio, api, socketio_path = "api/socket.io",
     on_startup = account.initialize, on_shutdown = sio.shutdown,
@@ -37,26 +47,14 @@ waiting : dict[int, str]  = {}
 lobby_lock = asyncio.Lock()
 
 
-@api.middleware("http")
-async def check_origin(request: Request, call_next):
-    if request.method not in ("GET", "HEAD", "OPTIONS"):
-        allowed = account.origin_allowed(
-            request.headers.get("origin"), request.url.scheme, request.headers["host"],
-        )
-        if not allowed:
-            return JSONResponse({"detail": "Request origin is not allowed."}, status_code = 403)
-    return await call_next(request)
-
-
 @api.get("/api/health")
 async def health() -> Health:
     return Health(status = "ok")
 
 
 @api.delete("/api/session", status_code = 204)
-async def logout(request: Request, response: Response):
-    response.delete_cookie("chess_session")
-    key = account.session_key(request.headers.get("cookie", ""))
+async def logout(request: Request):
+    key = account.request_key(request)
 
     async with lobby_lock:
         user = await run_in_threadpool(account.find_user, key)
@@ -168,18 +166,12 @@ async def match_player(sid: str, session: dict) -> None:
 
 @sio.event
 async def connect(sid, environ, auth):
-    scope   = environ["asgi.scope"]
-    scheme  = "https" if scope["scheme"] in ("https", "wss") else "http"
-    allowed = account.origin_allowed(environ.get("HTTP_ORIGIN"), scheme, environ.get("HTTP_HOST", ""))
-    if not allowed:
-        raise ConnectionRefusedError("Request origin is not allowed.")
-
     try:
         auth = Auth.model_validate(auth or {})
     except ValidationError:
-        raise ConnectionRefusedError("Invalid room.") from None
+        raise ConnectionRefusedError("Invalid session or room.") from None
 
-    key = account.session_key(environ.get("HTTP_COOKIE", ""))
+    key = account.session_key(auth.token)
     async with lobby_lock:
         user = await run_in_threadpool(account.find_user, key)
         if user is None:
@@ -281,8 +273,3 @@ async def disconnect(sid, reason):
             waiting.pop(user_id)
         if session["room"] is not None:
             await session["room"].disconnect(user_id, sid)
-
-
-frontend = Path(__file__).resolve().parents[2] / "frontend" / "dist"
-if frontend.is_dir():
-    api.mount("/", StaticFiles(directory = frontend, html = True), name = "frontend")

@@ -1,0 +1,28 @@
+services:
+  backend:
+    build: apps/backend
+    restart: unless-stopped
+    environment:
+      CHESS_ORIGIN: ${CHESS_ORIGIN:?Set CHESS_ORIGIN in .env}
+      FORWARDED_ALLOW_IPS: "*"
+    volumes:
+      - chess-data:/app/data
+
+  caddy:
+    image: caddy:2.11.7
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      CHESS_IP: ${CHESS_IP:?Set CHESS_IP in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on:
+      - backend
+
+volumes:
+  chess-data:
+    name: chess-data
+  caddy-data:

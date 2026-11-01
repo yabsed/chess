@@ -1,16 +1,18 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { Room }    from './game/room.svelte';
-  import { http }    from './http';
+  import { http, setToken } from './http';
   import Account     from './Account.svelte';
   import GameView    from './game/GameView.svelte';
   import type { User } from './game/protocol';
 
   const room = new Room();
+  const home = import.meta.env.BASE_URL;
   let user  = $state<User | null>(null);
   let ready = $state(false);
 
   function setUser(next: User | null) {
+    if (next === null) setToken('');
     const changed = user?.id !== next?.id;
     user = next;
     if (changed) {
@@ -40,7 +42,7 @@
 </svelte:head>
 
 <header class="row">
-  <a href="/" aria-label="Small Chess home">
+  <a href={home} aria-label="Small Chess home">
     <strong>♞ Small Chess</strong>
   </a>
   <small>One move at a time.</small>
@@ -79,7 +81,7 @@
         <button disabled={!room.canSend || !room.validInvite} onclick={() => room.enter('join')}>
           {room.canSend ? 'Join as Black' : 'Joining…'}
         </button>
-        <p><a href="/">Back to home</a></p>
+        <p><a href={home}>Back to home</a></p>
 
         {#if !room.validInvite}
           <p class="error">This invite link is invalid.</p>
@@ -98,7 +100,7 @@
 </main>
 
 <footer>
-  Small Chess · Take your time. · <a href="/third-party-notices.txt">Credits</a>
+  Small Chess · Take your time. · <a href={`${home}third-party-notices.txt`}>Credits</a>
 </footer>
 
 <style>

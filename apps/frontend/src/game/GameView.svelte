@@ -1,6 +1,7 @@
 <script lang="ts">
   import Board       from './board/Board.svelte';
   import MoveHistory from './MoveHistory.svelte';
+  import { backend } from '../http';
 
   import type { Room }  from './room.svelte';
   import type { Color } from './protocol';
@@ -92,7 +93,7 @@
 </div>
 
 {#if room.connection === 'closed'}
-  <p><a href="/">Back to home</a> · Refresh to reconnect to your seat.</p>
+  <p><a href={import.meta.env.BASE_URL}>Back to home</a> · Refresh to reconnect to your seat.</p>
 {/if}
 
 {#if game}
@@ -112,7 +113,7 @@
             <span class="identity">
               <span class="avatar">
                 {#if game.players[player]?.avatar}
-                  <img src={game.players[player]?.avatar ?? ''} alt="" />
+                  <img src={backend + game.players[player]?.avatar} alt="" />
                 {:else}
                   {game.players[player]?.username[0].toUpperCase() ?? '?'}
                 {/if}

@@ -26,4 +26,4 @@ build:
 	npm run --prefix apps/frontend build
 
 serve:
-	uv run --directory apps/backend uvicorn app.main:app --ws-max-size 4096
+	npm run --prefix apps/frontend preview -- --port $(PORT)
