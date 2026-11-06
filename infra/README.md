@@ -7,6 +7,10 @@ and task definition. Application deployments update only the backend stack.
 CloudFormation execution role; the infrastructure workflow cannot update that stack.
 
 The production account, region, and stack names live in `production.env`.
+This file contains only non-secret deployment settings and is committed to Git;
+the local-secret `.env` ignore rule does not match `production.env`. Each AWS job
+loads it into `GITHUB_ENV` before authentication, so the following action receives
+`env.AWS_REGION`. No separate GitHub variable named `AWS_REGION` is required.
 The foundation keeps the existing console-created stack name and its five
 original logical IDs. Renaming those resources is a migration, not formatting.
 
