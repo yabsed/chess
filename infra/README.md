@@ -3,8 +3,14 @@
 `foundation.yaml` owns the network, private ALB, CloudFront, ECS compute, ECR,
 RDS, secrets, logs, and deployment policies. `backend.yaml` owns the ECS service
 and task definition. Application deployments update only the backend stack.
+`deployment-access.yaml` separately owns the infrastructure caller policy and
+CloudFormation execution role; the infrastructure workflow cannot update that stack.
 
 The production account, region, and stack names live in `production.env`.
+This file contains only non-secret deployment settings and is committed to Git;
+the local-secret `.env` ignore rule does not match `production.env`. Each AWS job
+loads it into `GITHUB_ENV` before authentication, so the following action receives
+`env.AWS_REGION`. No separate GitHub variable named `AWS_REGION` is required.
 The foundation keeps the existing console-created stack name and its five
 original logical IDs. Renaming those resources is a migration, not formatting.
 
@@ -47,8 +53,12 @@ Keep the current foundation file: an app rollback must not undo the infrastructu
 3. Read the change list and validation artifact. Check replacements in particular.
 4. Run **Infrastructure → apply**, supplying the exact change set ARN.
 
-Apply verifies the stack, commit, template hash, and change set status. Database
-removal or replacement is refused; those require an explicit data migration.
+IAM requires the configured execution role when planning. Apply verifies the stack,
+commit, template hash, and change set status.
+The workflow accepts only modifications without replacement to existing non-IAM
+resources. New resources, removals, replacements, and IAM changes require a reviewed
+operator change and, where needed, an updated execution-role allowlist. Database
+removal or replacement requires an explicit data migration.
 `stack-policy.json` also prevents CloudFormation from replacing or removing the
 database during execution, including updates started outside this workflow.
 After the foundation completes, the same workflow calls Backend at that commit.
@@ -56,11 +66,59 @@ Foundation and backend writes share a concurrency group. A backend run whose
 foundation hash differs from the applied template stops before changing ECS.
 This handles a commit containing both infrastructure and application changes.
 
-The infrastructure workflow needs separate operator credentials in
-`AWS_INFRA_ACCESS_KEY_ID` and `AWS_INFRA_SECRET_ACCESS_KEY`. Do not put an
-administrator key in the backend secrets or reuse its restricted IAM user here.
-An operator can also create, review, and execute the same CloudFormation change
-set with a local AWS session. No console-only setting is required for stack changes.
+An unchanged template produces a successful plan with "Nothing to apply" in the
+run summary. Its empty change set cannot be applied. Other planning errors remain
+failures, with change-set and validation details uploaded when available.
+
+## GitHub credentials and bootstrap
+
+The four repository secrets are two different key pairs:
+
+| Secret | IAM user | Purpose |
+| --- | --- | --- |
+| `AWS_ACCESS_KEY_ID` | `chess-github-deploy` | Backend ECR push and deployment |
+| `AWS_SECRET_ACCESS_KEY` | `chess-github-deploy` | Secret half of that same key pair |
+| `AWS_INFRA_ACCESS_KEY_ID` | `chess-github-infra` | Foundation change sets |
+| `AWS_INFRA_SECRET_ACCESS_KEY` | `chess-github-infra` | Secret half of that same key pair |
+
+OIDC is not used. The infrastructure user is API-only and has no console password.
+It can create and execute change sets for the production foundation and pass only
+`chess-foundation-cloudformation` to CloudFormation. It has no direct EC2, RDS, IAM
+administration, or Secrets Manager access. The execution role has read and update
+permissions scoped to existing foundation resources, plus the EC2 launch permissions
+needed to update its ASG. IAM policy and trust changes are deliberately excluded:
+rewriting a passable role would otherwise let the workflow escalate its privileges.
+The ASG must use a numbered launch-template version.
+
+These are still production credentials: foundation updates can change networking,
+compute, and database settings. Keep write access to this repository restricted.
+Explicit reusable-workflow secret arguments prevent accidentally inheriting extra
+credentials; they do not isolate repository secrets from other trusted workflow code.
+The execution role can read the database URL when CloudFormation reads the secret
+resource. Its value must never appear in workflow output, parameters, or artifacts.
+
+The bootstrap is `chess-deployment-access` in the production account and region.
+`deployment-access.parameters.json` records the reviewed existing-resource ARN
+allowlist; these are resource identifiers, not credential values. Adding a resource
+or changing IAM requires a trusted operator to review both the foundation change
+and the bootstrap permissions. Never broaden these to administrator access merely
+to make a deployment pass.
+
+The API-only user is created directly with IAM before deploying the bootstrap:
+this account blocks the login-profile probes used by CloudFormation's IAM user
+resource. Its policy is managed by the bootstrap template. Access keys stay outside
+CloudFormation entirely. Create a key for `chess-github-infra` and send its two values
+directly to the matching GitHub Secrets using `gh secret set` through standard input
+or GitHub's secret editor. Do not commit them, print them, or put them in shell arguments.
+Both values must come from the same key; the backend user's existing key is unrelated.
+
+For rotation, create a second key on the same user, replace both infrastructure
+secrets, and run **Infrastructure → plan** on `main`. After it succeeds, deactivate
+and delete the previous key. GitHub cannot reveal a saved secret's original value.
+`SSH_PRIVATE_KEY` and `SSH_KNOWN_HOSTS` are not used by these AWS workflows.
+
+No GUI-only step is required. An operator can also create, review, and execute a
+CloudFormation change set using an authenticated local AWS session.
 
 ## Capacity and data
 
@@ -123,5 +181,5 @@ PATH="/tmp/chess-infra/bin:$PATH" make infra-check
 ```
 
 The guard rules check private encrypted databases, retention, secret handling,
-read-only containers, and rolling-deployment protection. They complement the
+read-only containers, rolling-deployment protection, and key/IAM boundaries. They complement the
 CloudFormation schema check and AWS change-set validation.

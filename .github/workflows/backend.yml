@@ -8,6 +8,11 @@ on:
     paths: [apps/backend/**, infra/**, Makefile, compose.yaml, .github/workflows/backend.yml]
   workflow_dispatch:
   workflow_call:
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
 
 permissions:
   contents: read
@@ -44,6 +49,17 @@ jobs:
       - name: Load deployment target
         if: env.DEPLOY == 'true'
         run: cat infra/production.env >> "$GITHUB_ENV"
+
+      - name: Check deployment credentials
+        if: env.DEPLOY == 'true'
+        env:
+          ACCESS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          SECRET_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          if [[ -z "$ACCESS_KEY" || -z "$SECRET_KEY" ]]; then
+            echo '::error::Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY repository secrets.'
+            exit 1
+          fi
 
       - uses: aws-actions/configure-aws-credentials@v4
         if: env.DEPLOY == 'true'
