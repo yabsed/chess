@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .game import Action, Color
+from .game import Action
 
 
 RoomId = Annotated[str, Field(pattern = r"^[a-f0-9]{12}$")]
@@ -13,13 +13,6 @@ RoomId = Annotated[str, Field(pattern = r"^[a-f0-9]{12}$")]
 class Health(BaseModel):
     status  : Literal["ok"]
     service : Literal["chess"] = "chess"
-
-
-class Seat(BaseModel):
-    """A seat owned by the signed-in user."""
-
-    id    : RoomId
-    color : Color
 
 
 class Auth(BaseModel):

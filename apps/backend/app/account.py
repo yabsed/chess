@@ -1,62 +1,26 @@
-"""Accounts, token sessions and small avatars share one SQLite file."""
+"""Accounts, token sessions and small avatars in the shared database."""
 
 import hashlib
-import os
 import secrets
-import sqlite3
 
-from contextlib import contextmanager
-from io         import BytesIO
-from pathlib    import Path
-from time       import monotonic, time
+from io import BytesIO
 
-from fastapi import APIRouter, HTTPException, Request, Response
-from PIL     import Image, ImageOps, UnidentifiedImageError
-from pwdlib  import PasswordHash
+from fastapi               import APIRouter, HTTPException, Request, Response
+from PIL                   import Image, ImageOps, UnidentifiedImageError
+from psycopg.errors        import UniqueViolation
+from pwdlib                import PasswordHash
 from starlette.concurrency import run_in_threadpool
 
+from .db       import pool, transaction
 from .protocol import Credentials, Session, User
 
 
 router   = APIRouter(prefix = "/api")
 password = PasswordHash.recommended()
 
-DATABASE    = Path(os.getenv("CHESS_DB", Path(__file__).resolve().parents[1] / "data/chess.sqlite"))
-SESSION_AGE = 7 * 24 * 60 * 60
-MAX_UPLOAD  = 2 * 1024 * 1024
+MAX_UPLOAD = 2 * 1024 * 1024
 
-attempts: dict[str, tuple[int, float]] = {}
 dummy_hash = password.hash(secrets.token_urlsafe(32))
-
-
-@contextmanager
-def database():
-    connection = sqlite3.connect(DATABASE)
-    connection.row_factory = sqlite3.Row
-    try:
-        with connection:
-            yield connection
-    finally:
-        connection.close()
-
-
-def initialize() -> None:
-    DATABASE.parent.mkdir(parents = True, exist_ok = True)
-    with database() as db:
-        db.executescript("""
-            CREATE TABLE IF NOT EXISTS users (
-                id             INTEGER PRIMARY KEY,
-                username       TEXT NOT NULL UNIQUE,
-                password_hash  TEXT NOT NULL,
-                avatar         BLOB,
-                avatar_version TEXT NOT NULL DEFAULT ''
-            );
-            CREATE TABLE IF NOT EXISTS sessions (
-                token_hash TEXT PRIMARY KEY,
-                user_id    INTEGER NOT NULL,
-                expires_at INTEGER NOT NULL
-            );
-        """)
 
 
 def user_from(row) -> User:
@@ -76,12 +40,12 @@ def request_key(request: Request) -> str:
 
 
 def find_user(key: str) -> User | None:
-    with database() as db:
+    with pool.connection() as db:
         row = db.execute("""
             SELECT users.id, username, avatar_version
             FROM sessions JOIN users ON users.id = sessions.user_id
-            WHERE token_hash = ? AND expires_at > ?
-        """, (key, int(time()))).fetchone()
+            WHERE token_hash = %s AND expires_at > now()
+        """, (key,)).fetchone()
     return user_from(row) if row else None
 
 
@@ -93,36 +57,37 @@ async def current_user(request: Request) -> User:
     return user
 
 
-def limit_attempts(request: Request) -> None:
-    # Called on the event loop before password work goes to a worker thread.
-    now = monotonic()
-    for address, (_, deadline) in list(attempts.items()):
-        if deadline <= now:
-            del attempts[address]
-
-    address = request.client.host if request.client else "unknown"
-    count, deadline = attempts.get(address, (0, now + 60))
-    if count >= 10 or len(attempts) >= 4096:
+def limit_attempts(address: str) -> None:
+    # Commit the attempt even when password verification later fails.
+    with pool.connection() as db:
+        db.execute("DELETE FROM attempts WHERE expires_at <= now()")
+        row = db.execute("""
+            INSERT INTO attempts VALUES (%s, 1, now() + interval '1 minute')
+            ON CONFLICT (address) DO UPDATE SET count = attempts.count + 1
+            RETURNING count
+        """, (address,)).fetchone()
+    assert row is not None
+    if row["count"] > 10:
         raise HTTPException(429, "Too many attempts. Try again in a minute.")
-    attempts[address] = (count + 1, deadline)
 
 
 def sign_in(credentials: Credentials, register: bool) -> tuple[User, str]:
     username = credentials.username.lower()
-    with database() as db:
+    with pool.connection() as db:
         if register:
             hashed = password.hash(credentials.password)
             try:
                 row = db.execute("""
-                    INSERT INTO users (username, password_hash) VALUES (?, ?)
+                    INSERT INTO users (username, password_hash) VALUES (%s, %s)
                     RETURNING id, username, avatar_version
                 """, (username, hashed)).fetchone()
-            except sqlite3.IntegrityError:
+            except UniqueViolation:
                 raise HTTPException(409, "That username is already taken.") from None
+            assert row is not None
         else:
             row = db.execute("""
                 SELECT id, username, password_hash, avatar_version
-                FROM users WHERE username = ?
+                FROM users WHERE username = %s
             """, (username,)).fetchone()
 
             hashed = row["password_hash"] if row else dummy_hash
@@ -132,17 +97,16 @@ def sign_in(credentials: Credentials, register: bool) -> tuple[User, str]:
 
         token = secrets.token_urlsafe(32)
         key   = session_key(token)
-        now   = int(time())
-
-        db.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
-        db.execute("INSERT INTO sessions VALUES (?, ?, ?)", (key, row["id"], now + SESSION_AGE))
+        db.execute("DELETE FROM sessions WHERE expires_at <= now()")
+        db.execute("INSERT INTO sessions (token_hash, user_id) VALUES (%s, %s)", (key, row["id"]))
     return user_from(row), token
 
 
 @router.post("/register", status_code = 201)
 @router.post("/session")
 async def login(credentials: Credentials, request: Request, response: Response) -> Session:
-    limit_attempts(request)
+    address = request.client.host if request.client else "unknown"
+    await run_in_threadpool(limit_attempts, address)
     register = request.url.path == "/api/register"
     user, token = await run_in_threadpool(sign_in, credentials, register)
 
@@ -158,8 +122,8 @@ async def me(request: Request, response: Response) -> User | None:
 
 
 def delete_session(key: str) -> None:
-    with database() as db:
-        db.execute("DELETE FROM sessions WHERE token_hash = ?", (key,))
+    with transaction(lobby = True) as db:
+        db.execute("DELETE FROM sessions WHERE token_hash = %s", (key,))
 
 
 def save_avatar(user_id: int, data: bytes) -> User:
@@ -179,9 +143,9 @@ def save_avatar(user_id: int, data: bytes) -> User:
 
     data    = output.getvalue()
     version = hashlib.sha256(data).hexdigest()[:16]
-    with database() as db:
-        db.execute("UPDATE users SET avatar = ?, avatar_version = ? WHERE id = ?", (data, version, user_id))
-        row = db.execute("SELECT id, username, avatar_version FROM users WHERE id = ?", (user_id,)).fetchone()
+    with transaction() as db:
+        db.execute("UPDATE users SET avatar = %s, avatar_version = %s WHERE id = %s", (data, version, user_id))
+        row = db.execute("SELECT id, username, avatar_version FROM users WHERE id = %s", (user_id,)).fetchone()
     return user_from(row)
 
 
@@ -197,8 +161,8 @@ async def upload_avatar(request: Request) -> User:
 
 @router.get("/users/{user_id}/avatar")
 def avatar(user_id: int) -> Response:
-    with database() as db:
-        row = db.execute("SELECT avatar FROM users WHERE id = ?", (user_id,)).fetchone()
+    with pool.connection() as db:
+        row = db.execute("SELECT avatar FROM users WHERE id = %s", (user_id,)).fetchone()
     if row is None or row["avatar"] is None:
         raise HTTPException(404, "No profile picture.")
     return Response(

@@ -1,48 +1,107 @@
-name: Deploy backend
+name: Backend
 
 on:
   push:
     branches: [main]
-    paths: [apps/backend/**, compose.yaml, Caddyfile, .github/workflows/backend.yml]
+    paths: [apps/backend/**, deploy/**, compose.yaml, .github/workflows/backend.yml]
+  pull_request:
+    paths: [apps/backend/**, deploy/**, compose.yaml, .github/workflows/backend.yml]
   workflow_dispatch:
 
-permissions: {}
+permissions:
+  contents: read
 
 concurrency:
-  group: backend-deploy
+  group: backend-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    if: github.ref == 'refs/heads/main'
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      DEPLOY_HOST: 15.134.45.45
-
-    steps:
-      - name: Deploy over SSH
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:18
         env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
-        run: |
-          umask 077
-          printf '%s\n' "${SSH_PRIVATE_KEY:?Set SSH_PRIVATE_KEY in repository secrets}" > "$RUNNER_TEMP/deploy_key"
-          printf '%s\n' "${SSH_KNOWN_HOSTS:?Set SSH_KNOWN_HOSTS in repository secrets}" > "$RUNNER_TEMP/known_hosts"
+          POSTGRES_USER: chess
+          POSTGRES_PASSWORD: chess
+          POSTGRES_DB: chess
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U chess -d chess"
+          --health-interval 2s --health-timeout 3s --health-retries 20
+    env:
+      CHESS_TEST_DATABASE_URL: postgresql://chess:chess@127.0.0.1:5432/chess
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install uv==0.11.16
+      - run: uv sync --directory apps/backend --locked
+      - run: make test
 
-          ssh -i "$RUNNER_TEMP/deploy_key" \
-            -o BatchMode=yes -o ConnectTimeout=15 \
-            -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
-            "admin@$DEPLOY_HOST" 'bash -se' <<'SH'
-          cd "$HOME/chess"
-          git pull --ff-only origin main
-          sudo -n docker compose up -d --build --force-recreate
-          SH
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.AWS_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+      ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+      ECS_EXECUTION_ROLE_ARN: ${{ vars.ECS_EXECUTION_ROLE_ARN }}
+      DATABASE_SECRET_ARN: ${{ vars.DATABASE_SECRET_ARN }}
+      CHESS_ORIGIN: ${{ vars.CHESS_ORIGIN }}
+      TRUSTED_PROXY_CIDRS: ${{ vars.TRUSTED_PROXY_CIDRS }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Check deployed server
+      - name: Build image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
-          curl --fail --silent --show-error \
-            --retry 12 --retry-delay 5 --retry-all-errors \
-            --connect-timeout 5 --max-time 10 \
-            "https://$DEPLOY_HOST/api/health"
+          image="$REGISTRY/${ECR_REPOSITORY:?}:$GITHUB_SHA"
+          docker build --platform linux/amd64 -t "$image" apps/backend
+          docker push "$image"
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+
+      - name: Register task and deploy
+        run: |
+          jq --arg image "$IMAGE" \
+             --arg role "${ECS_EXECUTION_ROLE_ARN:?}" \
+             --arg secret "${DATABASE_SECRET_ARN:?}" \
+             --arg origin "${CHESS_ORIGIN:?}" \
+             --arg proxies "${TRUSTED_PROXY_CIDRS:?}" \
+             --arg region "$AWS_REGION" '
+            .executionRoleArn = $role |
+            .containerDefinitions[0].image = $image |
+            .containerDefinitions[0].environment[0].value = $origin |
+            .containerDefinitions[0].environment[1].value = $proxies |
+            .containerDefinitions[0].secrets[0].valueFrom = $secret |
+            .containerDefinitions[0].logConfiguration.options["awslogs-region"] = $region
+          ' deploy/task-definition.json > "$RUNNER_TEMP/task.json"
+
+          task=$(aws ecs register-task-definition \
+            --cli-input-json "file://$RUNNER_TEMP/task.json" \
+            --query taskDefinition.taskDefinitionArn --output text)
+
+          aws ecs update-service --cluster "${ECS_CLUSTER:?}" --service "${ECS_SERVICE:?}" \
+            --task-definition "$task" \
+            --deployment-configuration 'minimumHealthyPercent=100,maximumPercent=200,deploymentCircuitBreaker={enable=true,rollback=true}' \
+            --query service.serviceName --output text
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+
+          deployed=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+            --query 'services[0].taskDefinition' --output text)
+          test "$deployed" = "$task"

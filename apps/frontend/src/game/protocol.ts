@@ -58,10 +58,14 @@ export interface ClientEvents {
   command : (command: Command, reply: (result: CommandReply) => void) => void;
 }
 
+export interface RoomSnapshot {
+  seat    : Seat | null;
+  waiting : boolean;
+  game    : GameSnapshot | null;
+}
+
 export interface ServerEvents {
-  seat           : (seat   : Seat | null)  => void;
-  waiting        : (waiting: boolean)      => void;
-  state          : (game   : GameSnapshot) => void;
+  state          : (state  : RoomSnapshot) => void;
   session_closed : (message: string)       => void;
 }
 

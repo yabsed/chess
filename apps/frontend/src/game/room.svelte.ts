@@ -59,26 +59,14 @@ export class Room {
     });
     this.socket = socket;
 
-    socket.on('seat', (seat) => {
-      if (seat?.id !== this.seat?.id) this.game = null;
-      this.seat    = seat ?? null;
-      this.waiting = false;
-      if (seat) this.setId(seat.id);
-    });
-
-    socket.on('state', (game) => {
-      if (!this.seat) return;
+    socket.on('state', ({ seat, waiting, game }) => {
+      const hadSeat = this.seat !== null;
+      this.seat       = seat;
+      this.waiting    = waiting;
       this.game       = game;
       this.connection = 'connected';
-    });
-
-    socket.on('waiting', (waiting) => {
-      this.waiting = waiting;
-      if (waiting) {
-        this.seat = null;
-        this.game = null;
-      }
-      if (!this.seat) this.setId('');
+      if (seat)                   this.setId(seat.id);
+      else if (waiting || hadSeat) this.setId('');
     });
 
     socket.on('connect', () => { this.connection = 'connected'; });

@@ -22,6 +22,27 @@ class Game:
     draw_offer : Color | None          = None
     ending     : dict[str, str] | None = None
 
+    @classmethod
+    def restore(cls, record: dict) -> "Game":
+        game = cls(board = chess.Board(record["initial"]))
+        for uci in record["moves"]:
+            game._move(game.turn, uci)
+
+        game.revision   = record["revision"]
+        game.draw_offer = record["draw_offer"]
+        game.ending     = record["ending"]
+        return game
+
+    def record(self) -> dict:
+        # FEN alone loses the history needed for repetition draws.
+        return {
+            "initial"    : self.board.root().fen(),
+            "moves"      : [move.uci() for move in self.board.move_stack],
+            "revision"   : self.revision,
+            "draw_offer" : self.draw_offer,
+            "ending"     : self.ending,
+        }
+
     @property
     def turn(self) -> Color:
         return "white" if self.board.turn == chess.WHITE else "black"
