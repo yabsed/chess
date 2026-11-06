@@ -49,6 +49,7 @@ def connect(sid: str, key: str, invited: str | None) -> None:
                 seen_at = now(), waiting_at = NULL
             RETURNING room_id
         """, (user_id, sid, key)).fetchone()
+        assert player is not None
 
         current = db.execute("SELECT * FROM rooms WHERE id = %s", (player["room_id"],)).fetchone()
         if current is not None and not current["finished"]:
@@ -83,8 +84,9 @@ def heartbeat(sids: list[str]) -> None:
 
 
 def create(db, white: int, black: int | None = None) -> str:
-    count = db.execute("SELECT count(*) AS total FROM rooms").fetchone()["total"]
-    if count >= MAX_ROOMS:
+    count = db.execute("SELECT count(*) AS total FROM rooms").fetchone()
+    assert count is not None
+    if count["total"] >= MAX_ROOMS:
         raise HTTPException(503, "The server is full. Please try again later.")
 
     while True:
@@ -168,8 +170,9 @@ def command(sid: str, command: Command) -> None:
         if row["black_id"] is None:
             raise InvalidAction("Please wait for your opponent to join.")
 
-        connected = db.execute("SELECT count(*) AS total FROM online_players WHERE room_id = %s", (row["id"],))
-        if command.type != "resign" and connected.fetchone()["total"] < 2:
+        connected = db.execute("SELECT count(*) AS total FROM online_players WHERE room_id = %s", (row["id"],)).fetchone()
+        assert connected is not None
+        if command.type != "resign" and connected["total"] < 2:
             raise InvalidAction("Please wait for your opponent to reconnect.")
 
         game.apply(color, command.type, command.move)
