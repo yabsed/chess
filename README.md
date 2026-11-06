@@ -28,26 +28,21 @@ To play with a friend, click **Invite a friend** and share the link. Your friend
 
 ```sh
 make install
-make database
 make backend
-# In another terminal:
 make frontend
 ```
 
-PostgreSQL runs on `127.0.0.1:5432`; the backend uses `CHESS_DATABASE_URL`.
-`make backend-docker` runs both through Compose instead. To serve a single public
-server through Caddy, set `CHESS_IP` and `CHESS_ORIGIN` in `.env`, then run
+`make backend` builds the backend image and starts it with PostgreSQL through
+Compose. The API runs on `127.0.0.1:8000`, PostgreSQL on `127.0.0.1:5432`.
+Local development and ECS use the same Dockerfile and startup command.
+After backend changes, run `make backend` again. To serve a single public server
+through Caddy, set `CHESS_IP` and `CHESS_ORIGIN` in `.env`, then run
 `docker compose --profile public up -d --build`.
 
 ```sh
-make test
 make check
 make build
 ```
-
-Tests start two backends against a temporary schema in `CHESS_TEST_DATABASE_URL`
-(defaults to the local database). They exercise cross-server play, concurrent
-commands, logout, a killed server, and repetition draws after recovery.
 
 ## Shared state
 
@@ -99,10 +94,12 @@ Provision these AWS resources before deploying:
   policy is scoped to this project's AWS account and resources: ECR push, ECS
   register/update/describe and `iam:PassRole` for the task execution role.
 
-The backend workflow tests first, builds a commit-tagged image, fills
-[`deploy/task-definition.json`](deploy/task-definition.json), and updates an
-existing ECS service. It enables deployment rollback and verifies that the new
-task revision actually became active. The service should use `awsvpc` networking,
+The backend workflow builds once and pushes that image to ECR in the same job.
+Each push gets a tag containing the commit SHA, run ID and attempt.
+It fills [`deploy/task-definition.json`](deploy/task-definition.json) with the
+pushed image's digest and updates the existing ECS service. It enables deployment
+rollback and verifies that the new task revision actually became active.
+The service should use `awsvpc` networking,
 the capacity provider, and the ALB target group above. Create its initial task
 revision from the same template with the image, role, origin, proxy CIDRs, secret and region
 filled in; these are the fields the workflow fills on subsequent deployments.
@@ -116,7 +113,7 @@ Set these GitHub repository variables to enable deployment:
 
 | Variable | Value |
 | --- | --- |
-| `AWS_DEPLOY_ENABLED` | `true` enables deployment; unset or `false` runs tests only |
+| `AWS_DEPLOY_ENABLED` | `true` enables deployment; unset or `false` builds the image only |
 | `AWS_REGION` | Region containing the service |
 | `ECR_REPOSITORY` | Image repository name |
 | `ECS_CLUSTER`, `ECS_SERVICE` | Existing cluster and service names |
@@ -125,10 +122,10 @@ Set these GitHub repository variables to enable deployment:
 | `CHESS_ORIGIN` | Allowed frontend origin |
 | `TRUSTED_PROXY_CIDRS` | ALB subnet CIDRs, comma-separated, for trusted forwarded client IPs |
 
-Backend changes pushed to `main` run tests, then build and deploy. Pull requests
-only run tests. To deploy the current `main` again, run the **Backend** workflow
-from the Actions tab. Setting `AWS_DEPLOY_ENABLED=false` stops future deployments
-without stopping the running service.
+Backend changes pushed to `main` build and deploy the image. Pull requests build
+without AWS credentials. To deploy the current `main` again, run the **Backend**
+workflow from the Actions tab. Setting `AWS_DEPLOY_ENABLED=false` stops future
+deployments without stopping the running service.
 
 No backend task needs a local data volume. Rolling deployment can briefly
 disconnect sockets; clients reconnect through the same API domain and recover

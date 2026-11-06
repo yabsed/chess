@@ -13,8 +13,3 @@ dependencies = [
     "psycopg[binary,pool]>=3.2,<4",
 ]
 
-[dependency-groups]
-dev = [
-    "python-socketio[client]>=5.16,<6",
-]
-

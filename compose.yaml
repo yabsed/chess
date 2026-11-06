@@ -17,6 +17,8 @@ services:
       retries: 20
 
   backend:
+    image: ${IMAGE:-chess-backend:local}
+    platform: linux/amd64
     build: apps/backend
     restart: unless-stopped
     environment:
