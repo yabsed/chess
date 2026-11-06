@@ -393,7 +393,8 @@ Resources:
       StorageType: gp2
       AllocatedStorage: '20'
       MaxAllocatedStorage: 1000
-      BackupRetentionPeriod: 7
+      # This account's free plan rejects seven-day retention; preserve enabled backups.
+      BackupRetentionPeriod: 1
       DeletionProtection: true
       CopyTagsToSnapshot: true
       AutoMinorVersionUpgrade: true

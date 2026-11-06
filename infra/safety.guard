@@ -10,7 +10,7 @@ rule preserve_database when %databases !empty {
         Properties.StorageEncrypted == true
         Properties.PubliclyAccessible == false
         Properties.DeletionProtection == true
-        Properties.BackupRetentionPeriod >= 7
+        Properties.BackupRetentionPeriod >= 1
     }
 }
 

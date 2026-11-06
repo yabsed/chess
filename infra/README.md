@@ -75,8 +75,10 @@ replaces hosts and ECS managed draining moves their tasks. The warmup period mus
 cover ECS registration. A successful EC2 health check alone does not prove the
 application is ready; verify service health after a host update.
 
-RDS is encrypted and private, with seven days of automated backups and deletion
-protection. The database, secret, image repository, and logs are retained on stack
+RDS is encrypted and private, with one day of automated backups and deletion
+protection. AWS rejected seven-day retention under this account's free plan;
+increase it after that account restriction is removed. The database, secret,
+image repository, and logs are retained on stack
 deletion/replacement. Retention is not a migration: a new empty database must never
 silently replace the current endpoint. Restoring a backup creates another database;
 check its contents before changing application credentials or traffic.
