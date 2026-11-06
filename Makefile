@@ -1,7 +1,7 @@
 PORT ?= 5174
 IMAGE ?= chess-backend:local
 
-.PHONY: install database backend frontend check image build serve
+.PHONY: install database backend frontend check image build serve infra-check
 
 install:
 	npm ci --prefix apps/frontend
@@ -26,3 +26,7 @@ build:
 
 serve:
 	npm run --prefix apps/frontend preview -- --port $(PORT)
+
+infra-check:
+	cfn-lint infra/foundation.yaml infra/backend.yaml
+	python3 infra/check.py
