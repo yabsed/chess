@@ -1,4 +1,4 @@
-"""One shared database. Changes and their wake-up notification commit together."""
+"""Shared storage and the lock for seating players across servers."""
 
 import os
 
@@ -26,13 +26,11 @@ def initialize() -> None:
 
 
 @contextmanager
-def transaction(*, lobby: bool = False):
+def lobby():
     with pool.connection() as db:
-        # Seating is exclusive. Moves share this lock and lock only their own room.
-        lock = "pg_advisory_xact_lock" if lobby else "pg_advisory_xact_lock_shared"
-        db.execute(f"SELECT {lock}(1)")
+        # Serialize seating and room capacity. Moves only lock their room row.
+        db.execute("SELECT pg_advisory_xact_lock(1)")
         yield db
-        db.execute("NOTIFY chess")
 
 
 def check() -> None:

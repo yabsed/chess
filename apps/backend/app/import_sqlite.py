@@ -6,7 +6,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib  import Path
 
-from .db import initialize, pool, transaction
+from .db import initialize, lobby, pool
 
 
 def import_accounts(path: Path) -> tuple[int, int]:
@@ -18,7 +18,7 @@ def import_accounts(path: Path) -> tuple[int, int]:
     finally:
         source.close()
 
-    with transaction(lobby = True) as db:
+    with lobby() as db:
         db.execute("LOCK TABLE users, sessions IN EXCLUSIVE MODE")
         if db.execute("SELECT 1 FROM users LIMIT 1").fetchone():
             raise ValueError("The destination already has accounts. Import into an empty database.")

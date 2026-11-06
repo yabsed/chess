@@ -3,31 +3,27 @@
 import hashlib
 import secrets
 
-from io import BytesIO
+from io        import BytesIO
+from threading import BoundedSemaphore
 
-from fastapi               import APIRouter, HTTPException, Request, Response
+from fastapi               import APIRouter, Depends, HTTPException, Request, Response
 from PIL                   import Image, ImageOps, UnidentifiedImageError
 from psycopg.errors        import UniqueViolation
 from pwdlib                import PasswordHash
 from starlette.concurrency import run_in_threadpool
 
-from .db       import pool, transaction
+from . import room
+from .db       import lobby, pool
 from .protocol import Credentials, Session, User
 
 
-router   = APIRouter(prefix = "/api")
-password = PasswordHash.recommended()
+router         = APIRouter(prefix = "/api")
+password       = PasswordHash.recommended()
+password_slots = BoundedSemaphore(8)
 
 MAX_UPLOAD = 2 * 1024 * 1024
 
 dummy_hash = password.hash(secrets.token_urlsafe(32))
-
-
-def user_from(row) -> User:
-    avatar = None
-    if row["avatar_version"]:
-        avatar = f"/api/users/{row['id']}/avatar?v={row['avatar_version']}"
-    return User(id = row["id"], username = row["username"], avatar = avatar)
 
 
 def session_key(token: str) -> str:
@@ -46,7 +42,7 @@ def find_user(key: str) -> User | None:
             FROM sessions JOIN users ON users.id = sessions.user_id
             WHERE token_hash = %s AND expires_at > now()
         """, (key,)).fetchone()
-    return user_from(row) if row else None
+    return User.profile(row["id"], row["username"], row["avatar_version"]) if row else None
 
 
 async def current_user(request: Request) -> User:
@@ -57,7 +53,10 @@ async def current_user(request: Request) -> User:
     return user
 
 
-def limit_attempts(address: str) -> None:
+def login_attempt(request: Request, response: Response) -> None:
+    address = request.client.host if request.client else "unknown"
+    response.headers["Cache-Control"] = "no-store"
+
     # Commit the attempt even when password verification later fails.
     with pool.connection() as db:
         db.execute("DELETE FROM attempts WHERE expires_at <= now()")
@@ -71,59 +70,73 @@ def limit_attempts(address: str) -> None:
         raise HTTPException(429, "Too many attempts. Try again in a minute.")
 
 
-def sign_in(credentials: Credentials, register: bool) -> tuple[User, str]:
-    username = credentials.username.lower()
-    with pool.connection() as db:
-        if register:
-            hashed = password.hash(credentials.password)
-            try:
-                row = db.execute("""
-                    INSERT INTO users (username, password_hash) VALUES (%s, %s)
-                    RETURNING id, username, avatar_version
-                """, (username, hashed)).fetchone()
-            except UniqueViolation:
-                raise HTTPException(409, "That username is already taken.") from None
-            assert row is not None
-        else:
-            row = db.execute("""
-                SELECT id, username, password_hash, avatar_version
-                FROM users WHERE username = %s
-            """, (username,)).fetchone()
+def new_session(db, row: dict) -> Session:
+    token = secrets.token_urlsafe(32)
+    key   = session_key(token)
+    user  = User.profile(row["id"], row["username"], row["avatar_version"])
 
-            hashed = row["password_hash"] if row else dummy_hash
-            valid  = password.verify(credentials.password, hashed)
-            if not valid or row is None:
-                raise HTTPException(401, "Incorrect username or password.")
-
-        token = secrets.token_urlsafe(32)
-        key   = session_key(token)
-        db.execute("DELETE FROM sessions WHERE expires_at <= now()")
-        db.execute("INSERT INTO sessions (token_hash, user_id) VALUES (%s, %s)", (key, row["id"]))
-    return user_from(row), token
-
-
-@router.post("/register", status_code = 201)
-@router.post("/session")
-async def login(credentials: Credentials, request: Request, response: Response) -> Session:
-    address = request.client.host if request.client else "unknown"
-    await run_in_threadpool(limit_attempts, address)
-    register = request.url.path == "/api/register"
-    user, token = await run_in_threadpool(sign_in, credentials, register)
-
-    response.headers["Cache-Control"] = "no-store"
+    db.execute("DELETE FROM sessions WHERE expires_at <= now()")
+    db.execute("INSERT INTO sessions (token_hash, user_id) VALUES (%s, %s)", (key, user.id))
     return Session(user = user, token = token)
 
 
+@router.post("/register", status_code = 201, dependencies = [Depends(login_attempt)])
+def register(credentials: Credentials) -> Session:
+    username = credentials.username.lower()
+
+    # Bound password work without occupying database connections.
+    with password_slots:
+        hashed = password.hash(credentials.password)
+
+    with pool.connection() as db:
+        try:
+            row = db.execute("""
+                INSERT INTO users (username, password_hash) VALUES (%s, %s)
+                RETURNING id, username, avatar_version
+            """, (username, hashed)).fetchone()
+        except UniqueViolation:
+            raise HTTPException(409, "That username is already taken.") from None
+        assert row is not None
+        return new_session(db, row)
+
+
+@router.post("/session", dependencies = [Depends(login_attempt)])
+def login(credentials: Credentials) -> Session:
+    with pool.connection() as db:
+        row = db.execute("""
+            SELECT id, username, password_hash, avatar_version
+            FROM users WHERE username = %s
+        """, (credentials.username.lower(),)).fetchone()
+
+    hashed = row["password_hash"] if row else dummy_hash
+    with password_slots:
+        valid = password.verify(credentials.password, hashed)
+    if not valid or row is None:
+        raise HTTPException(401, "Incorrect username or password.")
+
+    with pool.connection() as db:
+        return new_session(db, row)
+
+
 @router.get("/me")
-async def me(request: Request, response: Response) -> User | None:
+def me(request: Request, response: Response) -> User | None:
     response.headers["Cache-Control"] = "no-store"
+    return find_user(request_key(request))
+
+
+@router.delete("/session", status_code = 204)
+def logout(request: Request):
     key = request_key(request)
-    return await run_in_threadpool(find_user, key)
-
-
-def delete_session(key: str) -> None:
-    with transaction(lobby = True) as db:
-        db.execute("DELETE FROM sessions WHERE token_hash = %s", (key,))
+    with lobby() as db:
+        # Finish any in-flight action in this game before revoking its session.
+        db.execute("""
+            SELECT r.id FROM rooms r JOIN players p ON p.room_id = r.id
+            WHERE p.token_hash = %s FOR UPDATE OF r
+        """, (key,))
+        session = db.execute("DELETE FROM sessions WHERE token_hash = %s RETURNING user_id",
+                             (key,)).fetchone()
+        if session:
+            room.notify(db, session["user_id"])
 
 
 def save_avatar(user_id: int, data: bytes) -> User:
@@ -143,12 +156,17 @@ def save_avatar(user_id: int, data: bytes) -> User:
 
     data    = output.getvalue()
     version = hashlib.sha256(data).hexdigest()[:16]
-    with transaction() as db:
-        db.execute("UPDATE users SET avatar = %s, avatar_version = %s WHERE id = %s", (data, version, user_id))
-        row = db.execute("SELECT id, username, avatar_version FROM users WHERE id = %s", (user_id,)).fetchone()
-    return user_from(row)
+    with pool.connection() as db:
+        row = db.execute("""
+            UPDATE users SET avatar = %s, avatar_version = %s WHERE id = %s
+            RETURNING id, username, avatar_version
+        """, (data, version, user_id)).fetchone()
+        assert row is not None
+        room.notify(db, user_id)
+    return User.profile(row["id"], row["username"], row["avatar_version"])
 
 
+@router.put("/me/avatar")
 async def upload_avatar(request: Request) -> User:
     user = await current_user(request)
     data = bytearray()

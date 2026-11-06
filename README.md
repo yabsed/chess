@@ -50,10 +50,19 @@ Each backend keeps its own sockets. PostgreSQL holds accounts, sessions, seats,
 the waiting list and games. Games store the initial position and UCI moves so
 restoring them also restores repetition history.
 
-Lobby transactions serialize seating across servers. Moves lock their room and
-check its revision before committing. The transaction also sends `NOTIFY chess`;
-every backend reads a fresh snapshot for its local players and sends only changed
-screens. Seat, waiting status and board arrive as one `state` message.
+`game.py` owns chess rules. `room.py` seats players and commits their actions.
+`account.py` handles HTTP accounts; `main.py` connects sockets to those operations.
+
+Lobby transactions serialize seating and room capacity across servers. Moves
+lock only their room, then recheck the player's session, seat and game revision.
+The 500-room limit counts unfinished games; completed games follow the separate
+24-hour expiry policy.
+
+An action replies when its transaction commits. In that same transaction,
+`NOTIFY chess` names the users whose screens may have changed. One background
+loop per server reads those users' state and sends updates. It compares the DB
+rows before reconstructing games, so unchanged games need no chess calculation.
+Seat, waiting status and board arrive together as one `state` message.
 
 Every ten seconds, a backend renews its players' presence and reconciles snapshots
 even if an alert was missed. Presence expires after 35 seconds without renewal.

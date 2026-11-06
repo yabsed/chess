@@ -8,7 +8,7 @@ from time import monotonic
 
 import psycopg
 
-from fastapi                 import FastAPI, HTTPException, Request
+from fastapi                 import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from psycopg_pool            import PoolTimeout
 from pydantic                import ValidationError
@@ -18,7 +18,7 @@ from starlette.concurrency   import run_in_threadpool
 
 from . import account, db, room
 from .game     import InvalidAction
-from .protocol import Auth, Command, Entry, Health, User
+from .protocol import Auth, Command, Entry, Health
 
 
 ORIGIN = os.getenv("CHESS_ORIGIN", "http://127.0.0.1:5174")
@@ -38,32 +38,37 @@ sio = AsyncServer(
     cors_allowed_origins = [ORIGIN], cors_credentials = False,
 )
 
-# Only socket handles and the last screen sent to each socket live in this process.
-clients : set[str]           = set()
-sent    : dict[str, dict]    = {}
+# Cache the source of each screen, so unchanged games need no reconstruction.
+clients : dict[str, str]    = {}  # socket -> user
+sent    : dict[str, dict]    = {}  # socket -> last delivered row
+pending : set[str]          = set()
 tasks   : list[asyncio.Task] = []
 
-changed      = asyncio.Event()
-refresh_lock = asyncio.Lock()
+changed = asyncio.Event()
 
 
-async def refresh() -> None:
-    async with refresh_lock:
-        sids = list(clients)
-        if not sids:
-            return
-        views = await run_in_threadpool(room.views, sids)
+def wake(*users: str) -> None:
+    pending.update(users)
+    changed.set()
 
-        for sid in sids:
-            if sid not in clients:
-                continue
-            view = views.get(sid)
-            if view is None:
-                await sio.emit("session_closed", "Signed out or connected in another tab.", to = sid)
-                await sio.disconnect(sid)
-            elif view != sent.get(sid):
+
+async def refresh(sids: list[str]) -> None:
+    if not sids:
+        return
+    rows = await run_in_threadpool(room.read, sids)
+
+    for sid in sids:
+        if sid not in clients:
+            continue
+        row = rows.get(sid)
+        if row is None:
+            await sio.emit("session_closed", "Signed out or connected in another tab.", to = sid)
+            await sio.disconnect(sid)
+        elif row != sent.get(sid):
+            view = await run_in_threadpool(room.snapshot, row)
+            if sid in clients:
                 await sio.emit("state", view, to = sid)
-                sent[sid] = view
+                sent[sid] = row
 
 
 async def listen() -> None:
@@ -73,10 +78,14 @@ async def listen() -> None:
                 db.URL, autocommit = True, connect_timeout = 5,
             ) as connection:
                 await connection.execute("LISTEN chess")
-                changed.set()
+                wake(*clients.values())
                 while True:
-                    async for _ in connection.notifies(timeout = 10, stop_after = 1):
-                        changed.set()
+                    async for notice in connection.notifies(timeout = 10, stop_after = 1):
+                        # Older tasks send an empty payload during a rolling deployment.
+                        if notice.payload:
+                            wake(notice.payload)
+                        else:
+                            wake(*clients.values())
                     await connection.execute("SELECT 1")
         except psycopg.Error:
             log.exception("Database notifications interrupted")
@@ -92,18 +101,22 @@ async def update() -> None:
             except TimeoutError:
                 pass
             changed.clear()
+            users = pending.copy()
+            pending.clear()
 
             if monotonic() >= heartbeat_at:
                 if clients:
                     await run_in_threadpool(room.heartbeat, list(clients))
                 heartbeat_at = monotonic() + 10
+                users.update(clients.values())
 
-            # Also refresh every heartbeat: NOTIFY is a wake-up, not stored history.
-            await refresh()
+            # Reconcile on heartbeat too: notifications are not stored history.
+            sids = [sid for sid, user in clients.items() if user in users]
+            await refresh(sids)
         except (psycopg.Error, PoolTimeout):
             log.exception("Could not refresh connected players")
             await asyncio.sleep(1)
-            changed.set()
+            wake(*clients.values())
 
 
 async def startup() -> None:
@@ -138,21 +151,11 @@ async def health() -> Health:
     return Health(status = "ok")
 
 
-@api.delete("/api/session", status_code = 204)
-async def logout(request: Request):
-    await run_in_threadpool(account.delete_session, account.request_key(request))
-
-
-@api.put("/api/me/avatar")
-async def upload_avatar(request: Request) -> User:
-    return await account.upload_avatar(request)
-
-
 @sio.event
 async def connect(sid, environ, auth):
     try:
         auth = Auth.model_validate(auth or {})
-        await run_in_threadpool(room.connect, sid, account.session_key(auth.token), auth.id)
+        user_id = await run_in_threadpool(room.connect, sid, account.session_key(auth.token), auth.id)
     except ValidationError:
         raise ConnectionRefusedError("Invalid session or room.") from None
     except HTTPException as error:
@@ -160,8 +163,8 @@ async def connect(sid, environ, auth):
     except (psycopg.Error, PoolTimeout):
         raise ConnectionRefusedError("Server unavailable. Please reconnect.") from None
 
-    clients.add(sid)
-    await refresh()
+    clients[sid] = str(user_id)
+    wake(str(user_id))
 
 
 async def act(sid, data, model, action) -> dict:
@@ -179,7 +182,9 @@ async def act(sid, data, model, action) -> dict:
         log.exception("Could not commit player action")
         return {"error": "Server unavailable. Reconnect to check the latest state."}
 
-    await refresh()
+    # Rejections may mean the caller has stale state. Successful writes notify at commit.
+    if error and sid in clients:
+        wake(clients[sid])
     return {"error": error}
 
 
@@ -195,7 +200,7 @@ async def command(sid, data):
 
 @sio.event
 async def disconnect(sid, reason):
-    clients.discard(sid)
+    clients.pop(sid, None)
     sent.pop(sid, None)
     try:
         await run_in_threadpool(room.disconnect, [sid])

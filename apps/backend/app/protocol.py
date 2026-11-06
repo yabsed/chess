@@ -26,6 +26,11 @@ class User(BaseModel):
     username : str
     avatar   : str | None
 
+    @classmethod
+    def profile(cls, id: int, username: str, version: str) -> "User":
+        avatar = f"/api/users/{id}/avatar?v={version}" if version else None
+        return cls(id = id, username = username, avatar = avatar)
+
 
 class Session(BaseModel):
     user  : User
