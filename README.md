@@ -73,72 +73,22 @@ The schema is initialized under a database lock at startup. This establishes the
 initial schema; future column changes need explicit, backward-compatible SQL
 migrations before rolling out the code that uses them.
 
-## ECS on EC2
+## AWS deployment
 
-The frontend can stay on GitHub Pages. Set its `VITE_BACKEND_URL` repository variable
-to a stable HTTPS API domain pointing at an ALB, then rebuild the frontend.
-`CHESS_ORIGIN` is the frontend origin, for example `https://yabsed.github.io`.
+The frontend runs on GitHub Pages. The backend runs on ECS on EC2, reached through
+CloudFront and a private ALB. RDS PostgreSQL holds the shared state.
 
-Provision these AWS resources before deploying:
+[`infra/foundation.yaml`](infra/foundation.yaml) manages the infrastructure.
+[`infra/backend.yaml`](infra/backend.yaml) manages the ECS task and service.
+GitHub Actions deploys backend images by digest through CloudFormation; it verifies
+the running release and the public HTTP and WebSocket endpoints.
 
-- An ECR repository and an ECS cluster with an EC2 Auto Scaling Group capacity
-  provider using an ECS-optimized AMI. The image targets Linux x86-64. For host failure recovery, run at least
-  two tasks on distinct instances, spread across availability zones.
-- An HTTPS ALB with an ACM certificate, an `ip` target group on port 8000, and
-  `/api/health` checks. Configure its idle timeout above the Socket.IO heartbeat
-  interval. Give ECS the capacity to run old and new tasks during a deployment.
-- A private RDS PostgreSQL database with backups. Allow port 5432 from the task
-  security group; allow task port 8000 only from the ALB security group. Private
-  instances also need access to ECS, ECR, S3, Secrets Manager and CloudWatch through
-  NAT or the corresponding VPC endpoints.
-- A Secrets Manager secret containing the complete PostgreSQL connection string,
-  and a CloudWatch log group named `/ecs/chess`. The image includes the RDS CA bundle:
-  use `?sslmode=verify-full&sslrootcert=/etc/ssl/certs/rds.pem` in the RDS URL.
-- An ECS task execution role allowed to pull the image, write logs and read that
-  secret. The application itself uses database credentials and needs no AWS task
-  role. Set `ECS_ENABLE_AWSLOGS_EXECUTIONROLE_OVERRIDE=true` on the EC2 ECS agent
-  to use that role for logs. Give its database user ownership of the application's schema.
-- A dedicated IAM deployment user with the permissions in
-  [`deploy/github-deploy-policy.json`](deploy/github-deploy-policy.json). This
-  policy is scoped to this project's AWS account and resources: ECR push, ECS
-  register/update/describe and `iam:PassRole` for the task execution role.
+Backend changes merged into `main` deploy automatically when `AWS_DEPLOY_ENABLED`
+is `true`. Foundation changes use the **Infrastructure** workflow: plan, review the
+change set, then apply that exact plan. Frontend changes use the existing Pages workflow.
 
-The backend workflow builds once and pushes that image to ECR in the same job.
-Each push gets a tag containing the commit SHA, run ID and attempt.
-It fills [`deploy/task-definition.json`](deploy/task-definition.json) with the
-pushed image's digest and updates the existing ECS service. It enables deployment
-rollback and verifies that the new task revision actually became active.
-The service should use `awsvpc` networking,
-the capacity provider, and the ALB target group above. Create its initial task
-revision from the same template with the image, role, origin, proxy CIDRs, secret and region
-filled in; these are the fields the workflow fills on subsequent deployments.
-
-The current AWS account restricts GitHub OIDC configuration. Store the deployment
-user's access key in the repository's Actions **Secrets** as `AWS_ACCESS_KEY_ID`
-and `AWS_SECRET_ACCESS_KEY`; do not commit either value. When rotating the key,
-replace both secrets, verify a deployment, then delete the old key in IAM.
-
-Set these GitHub repository variables to enable deployment:
-
-| Variable | Value |
-| --- | --- |
-| `AWS_DEPLOY_ENABLED` | `true` enables deployment; unset or `false` builds the image only |
-| `AWS_REGION` | Region containing the service |
-| `ECR_REPOSITORY` | Image repository name |
-| `ECS_CLUSTER`, `ECS_SERVICE` | Existing cluster and service names |
-| `ECS_EXECUTION_ROLE_ARN` | Task execution role |
-| `DATABASE_SECRET_ARN` | Secret whose plaintext value is the database URL |
-| `CHESS_ORIGIN` | Allowed frontend origin |
-| `TRUSTED_PROXY_CIDRS` | ALB subnet CIDRs, comma-separated, for trusted forwarded client IPs |
-
-Backend changes pushed to `main` build and deploy the image. Pull requests build
-without AWS credentials. To deploy the current `main` again, run the **Backend**
-workflow from the Actions tab. Setting `AWS_DEPLOY_ENABLED=false` stops future
-deployments without stopping the running service.
-
-No backend task needs a local data volume. Rolling deployment can briefly
-disconnect sockets; clients reconnect through the same API domain and recover
-their committed game. Database availability is still required for play.
+See [infrastructure operations](infra/README.md) for credentials, deployment,
+rollback, capacity, data protection, and the existing-resource adoption boundary.
 
 ## Move the existing SQLite accounts
 

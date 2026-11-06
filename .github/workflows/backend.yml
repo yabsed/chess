@@ -3,37 +3,47 @@ name: Backend
 on:
   push:
     branches: [main]
-    paths: [apps/backend/**, deploy/**, Makefile, compose.yaml, .github/workflows/backend.yml]
+    paths: [apps/backend/**, infra/**, Makefile, compose.yaml, .github/workflows/backend.yml]
   pull_request:
-    paths: [apps/backend/**, deploy/**, Makefile, compose.yaml, .github/workflows/backend.yml]
+    paths: [apps/backend/**, infra/**, Makefile, compose.yaml, .github/workflows/backend.yml]
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
-concurrency:
-  group: backend-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   backend:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
+    concurrency:
+      group: aws-chess-${{ github.event_name == 'pull_request' && github.ref || 'production' }}
+      cancel-in-progress: false
     env:
       DEPLOY: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.AWS_DEPLOY_ENABLED == 'true' }}
       IMAGE: chess-backend:${{ github.sha }}
-      AWS_REGION: ${{ vars.AWS_REGION }}
-      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
-      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
-      ECS_SERVICE: ${{ vars.ECS_SERVICE }}
-      ECS_EXECUTION_ROLE_ARN: ${{ vars.ECS_EXECUTION_ROLE_ARN }}
-      DATABASE_SECRET_ARN: ${{ vars.DATABASE_SECRET_ARN }}
-      CHESS_ORIGIN: ${{ vars.CHESS_ORIGIN }}
-      TRUSTED_PROXY_CIDRS: ${{ vars.TRUSTED_PROXY_CIDRS }}
+      COMPOSE_PROJECT_NAME: chess-ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
-      - name: Build image
-        run: make image IMAGE="$IMAGE"
+
+      - name: Validate infrastructure
+        run: |
+          pip install cfn-lint==1.60.0 guardpycfn==0.1.0
+          make infra-check
+
+      - name: Build and check the image
+        run: |
+          make image IMAGE="$IMAGE"
+          docker compose up -d --no-build --wait postgres backend
+          bash infra/smoke.sh http://127.0.0.1:8000
+
+      - name: Clean up the local check
+        if: always()
+        run: docker compose down --volumes
+
+      - name: Load deployment target
+        if: env.DEPLOY == 'true'
+        run: cat infra/production.env >> "$GITHUB_ENV"
 
       - uses: aws-actions/configure-aws-credentials@v4
         if: env.DEPLOY == 'true'
@@ -41,51 +51,20 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
-      - id: ecr
-        if: env.DEPLOY == 'true'
-        uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Push image
+      - uses: aws-actions/amazon-ecr-login@v2
         if: env.DEPLOY == 'true'
-        env:
-          REGISTRY: ${{ steps.ecr.outputs.registry }}
+
+      - name: Push the checked image and deploy
+        if: env.DEPLOY == 'true'
         run: |
-          repository="$REGISTRY/${ECR_REPOSITORY:?}"
-          image="$repository:$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          docker tag "$IMAGE" "$image"
-          docker push "$image"
+          test "$(aws sts get-caller-identity --query Account --output text)" = "$AWS_ACCOUNT_ID"
+          repository=$(aws cloudformation describe-stacks --stack-name "$FOUNDATION_STACK" \
+            --output json | jq -er '.Stacks[0].Outputs[] | select(.OutputKey == "RepositoryUri") | .OutputValue')
+          pushed_image="$repository:$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          docker tag "$IMAGE" "$pushed_image"
+          docker push "$pushed_image"
 
-          digest=$(docker image inspect "$image" --format '{{json .RepoDigests}}' |
+          digest=$(docker image inspect "$pushed_image" --format '{{json .RepoDigests}}' |
             jq -er --arg repository "$repository" '.[] | select(startswith($repository + "@sha256:"))')
-          echo "IMAGE=$digest" >> "$GITHUB_ENV"
-
-      - name: Register task and deploy
-        if: env.DEPLOY == 'true'
-        run: |
-          jq --arg image "$IMAGE" \
-             --arg role "${ECS_EXECUTION_ROLE_ARN:?}" \
-             --arg secret "${DATABASE_SECRET_ARN:?}" \
-             --arg origin "${CHESS_ORIGIN:?}" \
-             --arg proxies "${TRUSTED_PROXY_CIDRS:?}" \
-             --arg region "$AWS_REGION" '
-            .executionRoleArn = $role |
-            .containerDefinitions[0].image = $image |
-            .containerDefinitions[0].environment[0].value = $origin |
-            .containerDefinitions[0].environment[1].value = $proxies |
-            .containerDefinitions[0].secrets[0].valueFrom = $secret |
-            .containerDefinitions[0].logConfiguration.options["awslogs-region"] = $region
-          ' deploy/task-definition.json > "$RUNNER_TEMP/task.json"
-
-          task=$(aws ecs register-task-definition \
-            --cli-input-json "file://$RUNNER_TEMP/task.json" \
-            --query taskDefinition.taskDefinitionArn --output text)
-
-          aws ecs update-service --cluster "${ECS_CLUSTER:?}" --service "${ECS_SERVICE:?}" \
-            --task-definition "$task" \
-            --deployment-configuration 'minimumHealthyPercent=100,maximumPercent=200,deploymentCircuitBreaker={enable=true,rollback=true}' \
-            --query service.serviceName --output text
-          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
-
-          deployed=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
-            --query 'services[0].taskDefinition' --output text)
-          test "$deployed" = "$task"
+          bash infra/deploy.sh "$digest"

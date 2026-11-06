@@ -1,0 +1,38 @@
+let databases = Resources.*[ Type == 'AWS::RDS::DBInstance' ]
+let secrets = Resources.*[ Type == 'AWS::SecretsManager::Secret' ]
+let tasks = Resources.*[ Type == 'AWS::ECS::TaskDefinition' ]
+let services = Resources.*[ Type == 'AWS::ECS::Service' ]
+
+rule preserve_database when %databases !empty {
+    %databases {
+        DeletionPolicy == 'Retain'
+        UpdateReplacePolicy == 'Retain'
+        Properties.StorageEncrypted == true
+        Properties.PubliclyAccessible == false
+        Properties.DeletionProtection == true
+        Properties.BackupRetentionPeriod >= 7
+    }
+}
+
+rule preserve_secret when %secrets !empty {
+    %secrets {
+        DeletionPolicy == 'Retain'
+        Properties.SecretString !exists
+    }
+}
+
+rule restrict_container when %tasks !empty {
+    %tasks.Properties.ContainerDefinitions.* {
+        ReadonlyRootFilesystem == true
+        Privileged !exists OR
+        Privileged == false
+    }
+}
+
+rule keep_healthy_tasks when %services !empty {
+    %services.Properties.DeploymentConfiguration {
+        MinimumHealthyPercent == 100
+        DeploymentCircuitBreaker.Enable == true
+        DeploymentCircuitBreaker.Rollback == true
+    }
+}
