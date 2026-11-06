@@ -28,5 +28,5 @@ serve:
 	npm run --prefix apps/frontend preview -- --port $(PORT)
 
 infra-check:
-	cfn-lint infra/foundation.yaml infra/backend.yaml
+	cfn-lint infra/foundation.yaml infra/backend.yaml infra/deployment-access.yaml
 	python3 infra/check.py

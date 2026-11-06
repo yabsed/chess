@@ -8,7 +8,7 @@ from guardpycfn import validate_with_guard
 
 rules = Path('infra/safety.guard').read_text()
 
-for name in ('foundation', 'backend'):
+for name in ('foundation', 'backend', 'deployment-access'):
     path = Path(f'infra/{name}.yaml')
     report = validate_with_guard(path.read_text(), rules, False)
     if not report['success'] or report['result']['status'] != 'PASS':
