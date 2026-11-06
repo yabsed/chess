@@ -155,7 +155,8 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      AllocationId: !GetAtt NatAddress.AllocationId
+      # Preserve the imported binding: changing it to GetAtt plans a NAT replacement.
+      AllocationId: eipalloc-0ce42cdfc09229a23
       SubnetId: !Ref PublicSubnetA
       Tags:
         - Key: Name
@@ -482,6 +483,7 @@ Resources:
     Type: AWS::ECS::Cluster
     Properties:
       ClusterName: !Ref ECSClusterName
+      Tags: []
       ClusterSettings:
         - Name: containerInsights
           Value: disabled
@@ -553,7 +555,7 @@ Resources:
   ClusterCPAssociation:
     Type: AWS::ECS::ClusterCapacityProviderAssociations
     Properties:
-      Cluster: !Ref ECSCluster
+      Cluster: !Ref ECSClusterName
       CapacityProviders: [FARGATE, FARGATE_SPOT, !Ref AsgCapacityProvider]
       DefaultCapacityProviderStrategy:
         - Base: 0
