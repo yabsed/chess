@@ -2,7 +2,7 @@
 name = "minimal-chess"
 version = "0.1.0"
 description = "A small, server-authoritative FastAPI chess application"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.115,<1",
     "uvicorn[standard]>=0.34,<1",
@@ -10,10 +10,6 @@ dependencies = [
     "python-socketio>=5.16,<6",
     "pwdlib[argon2]>=0.3,<1",
     "pillow>=12,<14",
-]
-
-[dependency-groups]
-dev = [
-    "python-socketio[client]>=5.16,<6",
+    "psycopg[binary,pool]>=3.3,<4",
 ]
 

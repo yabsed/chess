@@ -1,48 +1,80 @@
-name: Deploy backend
+name: Backend
 
 on:
   push:
     branches: [main]
-    paths: [apps/backend/**, compose.yaml, Caddyfile, .github/workflows/backend.yml]
+    paths:
+      - apps/backend/**
+      - infra/backend/**
+      - infra/requirements.txt
+      - Makefile
+      - compose.yaml
+      - .github/workflows/backend.yml
+
+  pull_request:
+    paths:
+      - apps/backend/**
+      - infra/backend/**
+      - infra/requirements.txt
+      - Makefile
+      - compose.yaml
+      - .github/workflows/backend.yml
+
   workflow_dispatch:
 
-permissions: {}
+permissions:
+  contents: read
 
-concurrency:
-  group: backend-deploy
-  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  deploy:
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+  backend:
+    runs-on:         ubuntu-latest
+    timeout-minutes: 60
+
+    concurrency:
+      group:              aws-chess-${{ github.ref }}
+      cancel-in-progress: false
+
     env:
-      DEPLOY_HOST: 15.134.45.45
+      IMAGE:                chess-backend:${{ github.sha }}
+      COMPOSE_PROJECT_NAME: chess-ci-${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
-      - name: Deploy over SSH
+      - uses: actions/checkout@v4
+
+      - name: Check templates
+        run:  |
+          pip install -r infra/requirements.txt
+          make infra-check
+
+      - name: Build image
+        run:  make image IMAGE="$IMAGE"
+
+      - name: Test HTTP and WebSocket
+        run:  |
+          docker compose up -d --no-build --wait postgres backend
+
+          python3 -m infra.backend.smoke http://127.0.0.1:8000
+
+      - name: Clean up test containers
+        if:   always()
+        run:  docker compose down --volumes
+
+      - name: Deploy and check backend
+        if:   >-
+          github.ref == 'refs/heads/main'
+          && vars.AWS_DEPLOY_ENABLED == 'true'
+        run:  bash infra/backend/deploy.sh
+
         env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
-        run: |
-          umask 077
-          printf '%s\n' "${SSH_PRIVATE_KEY:?Set SSH_PRIVATE_KEY in repository secrets}" > "$RUNNER_TEMP/deploy_key"
-          printf '%s\n' "${SSH_KNOWN_HOSTS:?Set SSH_KNOWN_HOSTS in repository secrets}" > "$RUNNER_TEMP/known_hosts"
+          AWS_DEFAULT_REGION:    ${{ vars.AWS_REGION }}
+          AWS_PAGER:             ''
+          AWS_ACCOUNT_ID:        ${{ vars.AWS_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
-          ssh -i "$RUNNER_TEMP/deploy_key" \
-            -o BatchMode=yes -o ConnectTimeout=15 \
-            -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
-            "admin@$DEPLOY_HOST" 'bash -se' <<'SH'
-          cd "$HOME/chess"
-          git pull --ff-only origin main
-          sudo -n docker compose up -d --build --force-recreate
-          SH
-
-      - name: Check deployed server
-        run: |
-          curl --fail --silent --show-error \
-            --retry 12 --retry-delay 5 --retry-all-errors \
-            --connect-timeout 5 --max-time 10 \
-            "https://$DEPLOY_HOST/api/health"
+          FOUNDATION_STACK: ${{ vars.FOUNDATION_STACK }}
+          BACKEND_STACK:    ${{ vars.BACKEND_STACK }}

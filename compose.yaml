@@ -1,21 +1,45 @@
 services:
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: chess
+      POSTGRES_PASSWORD: ${CHESS_POSTGRES_PASSWORD:-chess}
+      POSTGRES_DB: chess
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U chess -d chess"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
   backend:
+    image: ${IMAGE:-chess-backend:local}
+    platform: linux/amd64
     build: apps/backend
     restart: unless-stopped
     environment:
-      CHESS_ORIGIN: ${CHESS_ORIGIN:?Set CHESS_ORIGIN in .env}
+      CHESS_DATABASE_URL: postgresql://chess:${CHESS_POSTGRES_PASSWORD:-chess}@postgres:5432/chess
+      CHESS_ORIGIN: ${CHESS_ORIGIN:-http://127.0.0.1:5174}
       FORWARDED_ALLOW_IPS: "*"
-    volumes:
-      - chess-data:/app/data
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   caddy:
     image: caddy:2.11.7
+    profiles: [public]
     restart: unless-stopped
     ports:
       - "80:80"
       - "443:443"
     environment:
-      CHESS_IP: ${CHESS_IP:?Set CHESS_IP in .env}
+      CHESS_IP: ${CHESS_IP:-127.0.0.1}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
@@ -23,6 +47,5 @@ services:
       - backend
 
 volumes:
-  chess-data:
-    name: chess-data
+  postgres-data:
   caddy-data:

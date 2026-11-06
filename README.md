@@ -20,6 +20,80 @@ To play with a friend, click **Invite a friend** and share the link. Your friend
 - Use **Flip board** to change your view or **Offer draw** to propose a draw.
 - Reload to return to your game. Sign in again after closing the tab.
 - Games have no time limit. If your opponent disconnects, wait for them to reconnect.
-- Games in progress reset when the server restarts.
+- Games survive server restarts. Disconnected games expire after 24 hours without activity.
 
 [Report an issue](https://github.com/yabsed/chess/issues) · [Credits and licenses](apps/frontend/public/third-party-notices.txt)
+
+## Run locally
+
+```sh
+make install
+make backend
+make frontend
+```
+
+`make backend` builds the backend image and starts it with PostgreSQL through
+Compose. The API runs on `127.0.0.1:8000`, PostgreSQL on `127.0.0.1:5432`.
+Local development and ECS use the same Python 3.14 image and startup command.
+After backend changes, run `make backend` again. To serve a single public server
+through Caddy, set `CHESS_IP` and `CHESS_ORIGIN` in `.env`, then run
+`docker compose --profile public up -d --build`.
+
+```sh
+make check
+make build
+```
+
+## Shared state
+
+Each backend keeps its own sockets. PostgreSQL holds accounts, sessions, seats,
+the waiting list and games. Games store the initial position and UCI moves so
+restoring them also restores repetition history.
+
+`game.py` owns chess rules. `room.py` seats players and commits their actions.
+`account.py` handles HTTP accounts; `main.py` connects sockets to those operations.
+
+SQL stays beside the operation that uses it. Parameterized queries use Python 3.14
+`t`-strings; Psycopg binds their values separately. Prepare complex values before
+the query, and keep each transaction around the complete operation.
+
+Lobby transactions serialize seating and room capacity across servers. Moves
+lock only their room, then recheck the player's session, seat and game revision.
+The 500-room limit counts unfinished games; completed games follow the separate
+24-hour expiry policy.
+
+An action replies when its transaction commits. In that same transaction,
+`NOTIFY chess` names the users whose screens may have changed. One background
+loop per server reads those users' state and sends updates. It compares the DB
+rows before reconstructing games, so unchanged games need no chess calculation.
+Seat, waiting status and board arrive together as one `state` message.
+
+Every ten seconds, a backend renews its players' presence and reconciles snapshots
+even if an alert was missed. Presence expires after 35 seconds without renewal.
+An old socket cannot clear its replacement. Use a direct PostgreSQL connection:
+the notification listener needs a dedicated session, not transaction pooling.
+
+The schema is initialized under a database lock at startup. This establishes the
+initial schema; future column changes need explicit, backward-compatible SQL
+migrations before rolling out the code that uses them.
+
+## AWS deployment
+
+The frontend runs on GitHub Pages. The backend runs on ECS on EC2, reached through
+CloudFront and a private ALB. RDS PostgreSQL holds the shared state.
+
+[`infra/foundation/template.yaml`](infra/foundation/template.yaml) manages the infrastructure.
+[`infra/backend/template.yaml`](infra/backend/template.yaml) manages the ECS task and service.
+GitHub Actions deploys backend images by digest through CloudFormation; it verifies
+the service's task definition and the public HTTP and WebSocket endpoints. ECS and
+CloudFormation handle failed rollouts; a failed public endpoint check stops the
+workflow for investigation without a second automatic deployment.
+
+Backend changes merged into `main` deploy automatically when `AWS_DEPLOY_ENABLED`
+is `true`. Review foundation changes in Git, then manually run the **Infrastructure**
+workflow on `main` to check and deploy them. Infrastructure and backend deployments
+run independently: deploy required infrastructure before releasing the app. Frontend
+changes use the existing Pages workflow.
+
+See [infrastructure operations](infra/README.md) for credentials, deployment,
+rollback, capacity and data protection.

@@ -1,4 +1,4 @@
-FROM docker.io/library/python:3.13-slim-bookworm
+FROM docker.io/library/python:3.14-slim-bookworm
 COPY --from=ghcr.io/astral-sh/uv:0.11.16 /uv /bin/uv
 
 WORKDIR /app
@@ -8,7 +8,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev --no-cache --no-install-project
 
 COPY app ./app
-RUN mkdir /app/data && chown 10001:10001 /app/data
+ADD --chmod=644 https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /etc/ssl/certs/rds.pem
 USER 10001:10001
 
 EXPOSE 8000
