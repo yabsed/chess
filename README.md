@@ -94,8 +94,10 @@ Provision these AWS resources before deploying:
   secret. The application itself uses database credentials and needs no AWS task
   role. Set `ECS_ENABLE_AWSLOGS_EXECUTIONROLE_OVERRIDE=true` on the EC2 ECS agent
   to use that role for logs. Give its database user ownership of the application's schema.
-- A GitHub OIDC role restricted to this repository's deployment branch, with ECR
-  push, ECS register/update/describe and `iam:PassRole` for the execution role.
+- A dedicated IAM deployment user with the permissions in
+  [`deploy/github-deploy-policy.json`](deploy/github-deploy-policy.json). This
+  policy is scoped to this project's AWS account and resources: ECR push, ECS
+  register/update/describe and `iam:PassRole` for the task execution role.
 
 The backend workflow tests first, builds a commit-tagged image, fills
 [`deploy/task-definition.json`](deploy/task-definition.json), and updates an
@@ -105,11 +107,16 @@ the capacity provider, and the ALB target group above. Create its initial task
 revision from the same template with the image, role, origin, proxy CIDRs, secret and region
 filled in; these are the fields the workflow fills on subsequent deployments.
 
+The current AWS account restricts GitHub OIDC configuration. Store the deployment
+user's access key in the repository's Actions **Secrets** as `AWS_ACCESS_KEY_ID`
+and `AWS_SECRET_ACCESS_KEY`; do not commit either value. When rotating the key,
+replace both secrets, verify a deployment, then delete the old key in IAM.
+
 Set these GitHub repository variables to enable deployment:
 
 | Variable | Value |
 | --- | --- |
-| `AWS_ROLE_ARN` | GitHub OIDC deployment role; leaving it unset runs tests only |
+| `AWS_DEPLOY_ENABLED` | `true` enables deployment; unset or `false` runs tests only |
 | `AWS_REGION` | Region containing the service |
 | `ECR_REPOSITORY` | Image repository name |
 | `ECS_CLUSTER`, `ECS_SERVICE` | Existing cluster and service names |
@@ -117,6 +124,11 @@ Set these GitHub repository variables to enable deployment:
 | `DATABASE_SECRET_ARN` | Secret whose plaintext value is the database URL |
 | `CHESS_ORIGIN` | Allowed frontend origin |
 | `TRUSTED_PROXY_CIDRS` | ALB subnet CIDRs, comma-separated, for trusted forwarded client IPs |
+
+Backend changes pushed to `main` run tests, then build and deploy. Pull requests
+only run tests. To deploy the current `main` again, run the **Backend** workflow
+from the Actions tab. Setting `AWS_DEPLOY_ENABLED=false` stops future deployments
+without stopping the running service.
 
 No backend task needs a local data volume. Rolling deployment can briefly
 disconnect sockets; clients reconnect through the same API domain and recover
