@@ -155,8 +155,9 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      # Preserve the imported binding: changing it to GetAtt plans a NAT replacement.
-      AllocationId: eipalloc-0ce42cdfc09229a23
+      # Keep the imported GetAtt form; changing its syntax plans a NAT replacement.
+      AllocationId:
+        Fn::GetAtt: [NatAddress, AllocationId]
       SubnetId: !Ref PublicSubnetA
       Tags:
         - Key: Name
