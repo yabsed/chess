@@ -658,6 +658,7 @@ Resources:
               - cloudformation:DescribeStackEvents
               - cloudformation:DescribeStackResources
               - cloudformation:GetTemplate
+              - cloudformation:GetTemplateSummary
             Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ECSClusterName}-backend/*'
           - Effect: Allow
             Action: iam:PassRole

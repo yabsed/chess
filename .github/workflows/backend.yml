@@ -63,8 +63,10 @@ jobs:
             --output json | jq -er '.Stacks[0].Outputs[] | select(.OutputKey == "RepositoryUri") | .OutputValue')
           pushed_image="$repository:$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           docker tag "$IMAGE" "$pushed_image"
-          docker push "$pushed_image"
+          # ECS runs this platform; pin its manifest rather than an image index.
+          docker push --platform linux/amd64 "$pushed_image"
 
-          digest=$(docker image inspect "$pushed_image" --format '{{json .RepoDigests}}' |
-            jq -er --arg repository "$repository" '.[] | select(startswith($repository + "@sha256:"))')
-          bash infra/deploy.sh "$digest"
+          digest=$(aws ecr batch-get-image --repository-name "${repository##*/}" \
+            --image-ids "imageTag=${pushed_image##*:}" --output json |
+            jq -er '.images[0].imageId.imageDigest')
+          bash infra/deploy.sh "$repository@$digest"
