@@ -9,16 +9,6 @@ on:
       - Makefile
 
   workflow_dispatch:
-    inputs:
-      action:
-        description: Plan or apply infrastructure changes
-        type:        choice
-        options:     [plan, apply]
-        default:     plan
-
-      change_set:
-        description: Reviewed change set ARN (apply only)
-        type:        string
 
 
 permissions:
@@ -32,8 +22,13 @@ defaults:
 
 jobs:
 
-  validate:
-    runs-on: ubuntu-latest
+  foundation:
+    runs-on:         ubuntu-latest
+    timeout-minutes: 120
+
+    concurrency:
+      group:              aws-chess-${{ github.ref }}
+      cancel-in-progress: false
 
     steps:
       - uses: actions/checkout@v4
@@ -44,41 +39,16 @@ jobs:
       - name: Check infrastructure
         run:  make infra-check
 
-
-  foundation:
-    needs: validate
-    if:    >-
-      github.event_name == 'workflow_dispatch'
-      && github.ref == 'refs/heads/main'
-
-    runs-on:         ubuntu-latest
-    timeout-minutes: 120
-
-    concurrency:
-      group:              aws-chess-${{ github.ref }}
-      cancel-in-progress: false
-
-    env:
-      AWS_DEFAULT_REGION:    ${{ vars.AWS_REGION }}
-      AWS_PAGER:             ''
-      AWS_ACCOUNT_ID:        ${{ vars.AWS_ACCOUNT_ID }}
-      AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_INFRA_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_INFRA_SECRET_ACCESS_KEY }}
-
-      FOUNDATION_STACK: ${{ vars.FOUNDATION_STACK }}
-      FOUNDATION_ROLE:  ${{ vars.FOUNDATION_ROLE }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Plan infrastructure changes
-        if:   inputs.action == 'plan'
-        run:  bash infra/foundation/plan.sh
-
-      - name: Apply the reviewed plan
-        if:   inputs.action == 'apply'
+      - name: Deploy infrastructure
+        if:   github.ref == 'refs/heads/main'
+        run:  bash infra/foundation/deploy.sh
 
         env:
-          CHANGE_SET: ${{ inputs.change_set }}
+          AWS_DEFAULT_REGION:    ${{ vars.AWS_REGION }}
+          AWS_PAGER:             ''
+          AWS_ACCOUNT_ID:        ${{ vars.AWS_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_INFRA_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_INFRA_SECRET_ACCESS_KEY }}
 
-        run: bash infra/foundation/apply.sh "$CHANGE_SET"
+          FOUNDATION_STACK: ${{ vars.FOUNDATION_STACK }}
+          FOUNDATION_ROLE:  ${{ vars.FOUNDATION_ROLE }}

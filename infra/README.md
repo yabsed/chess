@@ -6,8 +6,7 @@ AWS commands. CloudFormation manages resources; ECS starts and replaces containe
 | File | Responsibility |
 | --- | --- |
 | [backend/deploy.sh](backend/deploy.sh) | Publish the tested image, deploy it, and check the API |
-| [foundation/plan.sh](foundation/plan.sh) | Create a change set for review |
-| [foundation/apply.sh](foundation/apply.sh) | Apply that change set |
+| [foundation/deploy.sh](foundation/deploy.sh) | Check the account, protect the database, and deploy foundation |
 | [foundation/template.yaml](foundation/template.yaml) | Network, EC2 capacity, ALB, CloudFront, RDS, ECR and roles |
 | [backend/template.yaml](backend/template.yaml) | ECS task definition and service |
 | [bootstrap/access.yaml](bootstrap/access.yaml) | Infrastructure deployment permissions |
@@ -59,17 +58,23 @@ trigger a second automatic deployment. The successful run summary records the im
 
 ## Infrastructure
 
-The [Infrastructure workflow](../.github/workflows/infra.yml) checks PRs and offers
-two manual actions on `main`:
+Review template changes in Git and merge them to `main`. In Actions, select the
+[Infrastructure workflow](../.github/workflows/infra.yml) and **Run workflow** on
+`main`. There are no inputs. The run:
 
-1. **plan** creates a CloudFormation change set. Read the ARN in the run summary,
-   then review its resource changes in the log or CloudFormation console.
-2. **apply** executes that reviewed ARN and waits for the stack update to finish.
+1. Checks infrastructure templates and tests the smoke command.
+2. Checks the AWS account and sets the database protection policy.
+3. Runs `aws cloudformation deploy` and waits for completion.
 
-An unchanged template reports "nothing to apply". Other AWS errors fail the run.
-Apply checks the target stack; CloudFormation checks whether the change set is
-available. It applies the template recorded in the plan, regardless of later Git
-commits. Create a new plan if you want to deploy a newer template.
+Pull requests and manual runs on other branches stop after the checks. A push to
+`main` does not deploy infrastructure. Each manual run deploys its checked-out
+template with the stack's existing parameters. An unchanged template succeeds
+without an update; other AWS errors fail the run. CloudFormation handles rollback
+when an update fails. Deployment includes no separate change-set review.
+
+The deployment user needs `cloudformation:GetTemplateSummary` for this command.
+An operator must apply the [bootstrap permissions](bootstrap/README.md) before
+using this workflow for the first time after switching to `deploy`.
 
 The existing infrastructure role is limited to updates of allowlisted resources.
 Resource additions and IAM changes may require an operator with the appropriate
@@ -77,8 +82,8 @@ permissions. The database stack policy blocks replacement and removal; deletion
 protection and retention settings remain in the template.
 
 Infrastructure and backend releases share a deployment concurrency group, but run
-independently. Applying infrastructure does not start Backend. When an app change
-needs new infrastructure, merge and apply the infrastructure first, then merge the
+independently. Deploying infrastructure does not start Backend. When an app change
+needs new infrastructure, merge and deploy the infrastructure first, then merge the
 app change or manually run Backend on `main`. The workflow does not compare the
 entire foundation template before releasing an app.
 

@@ -86,9 +86,9 @@ CloudFormation handle failed rollouts; a failed public endpoint check stops the
 workflow for investigation without a second automatic deployment.
 
 Backend changes merged into `main` deploy automatically when `AWS_DEPLOY_ENABLED`
-is `true`. Foundation changes use the **Infrastructure** workflow: plan, review the
-change set, then apply that exact plan. Infrastructure and backend deployments run
-independently: apply required infrastructure before releasing the app. Frontend
+is `true`. Review foundation changes in Git, then manually run the **Infrastructure**
+workflow on `main` to check and deploy them. Infrastructure and backend deployments
+run independently: deploy required infrastructure before releasing the app. Frontend
 changes use the existing Pages workflow.
 
 See [infrastructure operations](infra/README.md) for credentials, deployment,
