@@ -1,0 +1,2 @@
+cfn-lint==1.60.0
+guardpycfn==0.1.0

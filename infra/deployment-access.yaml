@@ -1,337 +1,379 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Bootstrap GitHub infrastructure access separately from the foundation it can update; credentials remain
-  outside CloudFormation.
+Description: GitHub infrastructure access for the existing Chess foundation.
+
 Metadata:
   AWSToolsMetrics:
     AWSAgentToolkit: aws-cloudformation@3
   com.aws.cloudformation.Context:
     ref:
-    - infra/README.md
+      - infra/README.md
+
 Parameters:
   FoundationStack:
     Type: String
     AllowedPattern: '[A-Za-z][A-Za-z0-9-]*'
-  ApplicationName:
-    Type: String
-    Default: chess
-    AllowedPattern: '[a-z][a-z0-9-]*'
-  InfrastructureUserName:
-    Type: String
-    Default: chess-github-infra
-    AllowedPattern: '[A-Za-z0-9+=,.@_-]+'
-  FoundationRoleName:
-    Type: String
-    Default: chess-foundation-cloudformation
-    AllowedPattern: '[A-Za-z0-9+=,.@_-]+'
-  LaunchTemplateArn:
-    Type: String
-    AllowedPattern: arn:aws:ec2:[a-z0-9-]+:[0-9]{12}:launch-template/lt-[a-f0-9]+
-  AutoScalingGroupArn:
-    Type: String
-    AllowedPattern: arn:aws:autoscaling:[a-z0-9-]+:[0-9]{12}:autoScalingGroup:.+:autoScalingGroupName/.+
-  ComputeSecurityGroupArn:
-    Type: String
-    AllowedPattern: arn:aws:ec2:[a-z0-9-]+:[0-9]{12}:security-group/sg-[a-f0-9]+
-  ComputeSubnetArns:
-    Type: CommaDelimitedList
-    AllowedPattern: arn:aws:ec2:[a-z0-9-]+:[0-9]{12}:subnet/subnet-[a-f0-9]+
-    Description: The two private ECS subnets.
-  FoundationResourceArns:
-    Type: CommaDelimitedList
-    AllowedPattern: arn:aws:[a-z0-9-]+:[a-z0-9-]*:[0-9]*:.+
-    Description: Reviewed ARN allowlist of existing foundation resources; expand before adding or replacing resources.
+
 Resources:
-  # The normal stack service principal does not supply the registry-only SourceArn context.
-  # The caller policy pins PassRole to this role and planning to one foundation stack.
+  # CloudFormation can update these resources, but cannot rewrite IAM permissions.
   FoundationRole:
     Type: AWS::IAM::Role
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      RoleName:
-        Ref: FoundationRoleName
+      RoleName: chess-foundation-cloudformation
       Description: CloudFormation updates to the existing chess foundation resource allowlist.
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
-        - Effect: Allow
-          Principal:
-            Service: cloudformation.amazonaws.com
-          Action: sts:AssumeRole
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
       Policies:
-      - PolicyName: foundation
-        PolicyDocument:
-          Version: '2012-10-17'
-          Statement:
-          - Sid: InspectResources
-            Effect: Allow
-            Action:
-            - autoscaling:DescribeAutoScalingGroups
-            - autoscaling:DescribeAutoScalingInstances
-            - autoscaling:DescribeInstanceRefreshes
-            - autoscaling:DescribeLaunchConfigurations
-            - autoscaling:DescribeLifecycleHooks
-            - autoscaling:DescribeLoadBalancerTargetGroups
-            - autoscaling:DescribeLoadBalancers
-            - autoscaling:DescribeNotificationConfigurations
-            - autoscaling:DescribeScalingActivities
-            - autoscaling:DescribeTags
-            - autoscaling:DescribeWarmPool
-            - ec2:DescribeAccountAttributes
-            - ec2:DescribeAddresses
-            - ec2:DescribeAvailabilityZones
-            - ec2:DescribeImages
-            - ec2:DescribeInstanceTypeOfferings
-            - ec2:DescribeInstanceTypes
-            - ec2:DescribeInstances
-            - ec2:DescribeInternetGateways
-            - ec2:DescribeLaunchTemplateVersions
-            - ec2:DescribeLaunchTemplates
-            - ec2:DescribeNatGateways
-            - ec2:DescribeNetworkAcls
-            - ec2:DescribeNetworkInterfaces
-            - ec2:DescribeRouteTables
-            - ec2:DescribeSecurityGroups
-            - ec2:DescribeSubnets
-            - ec2:DescribeTags
-            - ec2:DescribeVpcEncryptionControls
-            - ec2:DescribeVpcEndpoints
-            - ec2:DescribeVpcs
-            - ec2:DescribeVpnGateways
-            - elasticloadbalancing:DescribeCapacityReservation
-            - elasticloadbalancing:DescribeListenerAttributes
-            - elasticloadbalancing:DescribeListeners
-            - elasticloadbalancing:DescribeLoadBalancerAttributes
-            - elasticloadbalancing:DescribeLoadBalancers
-            - elasticloadbalancing:DescribeTags
-            - elasticloadbalancing:DescribeTargetGroupAttributes
-            - elasticloadbalancing:DescribeTargetGroups
-            - elasticloadbalancing:DescribeTargetHealth
-            - iam:ListRoles
-            - logs:DescribeIndexPolicies
-            - logs:DescribeLogGroups
-            - logs:DescribeResourcePolicies
-            - rds:DescribeDBEngineVersions
-            - rds:DescribeEvents
-            Resource: '*'
-          - Sid: MaintainFoundationResources
-            Effect: Allow
-            Action:
-            - autoscaling:AttachLoadBalancerTargetGroups
-            - autoscaling:AttachLoadBalancers
-            - autoscaling:CancelInstanceRefresh
-            - autoscaling:CreateOrUpdateTags
-            - autoscaling:DeleteLifecycleHook
-            - autoscaling:DeleteNotificationConfiguration
-            - autoscaling:DeleteTags
-            - autoscaling:DetachLoadBalancerTargetGroups
-            - autoscaling:DetachLoadBalancers
-            - autoscaling:DisableMetricsCollection
-            - autoscaling:EnableMetricsCollection
-            - autoscaling:PutLifecycleHook
-            - autoscaling:PutNotificationConfiguration
-            - autoscaling:ResumeProcesses
-            - autoscaling:StartInstanceRefresh
-            - autoscaling:SuspendProcesses
-            - cloudfront:GetDistribution
-            - cloudfront:GetDistributionConfig
-            - cloudfront:GetVpcOrigin
-            - cloudfront:ListTagsForResource
-            - cloudfront:TagResource
-            - cloudfront:UntagResource
-            - cloudfront:UpdateDistribution
-            - cloudfront:UpdateDistributionWithStagingConfig
-            - cloudfront:UpdateVpcOrigin
-            - ec2:AssignPrivateNatGatewayAddress
-            - ec2:AssociateAddress
-            - ec2:AssociateNatGatewayAddress
-            - ec2:AssociateSubnetCidrBlock
-            - ec2:AttachInternetGateway
-            - ec2:AttachVpnGateway
-            - ec2:AuthorizeSecurityGroupEgress
-            - ec2:AuthorizeSecurityGroupIngress
-            - ec2:CreateLaunchTemplateVersion
-            - ec2:CreateTags
-            - ec2:DeleteTags
-            - ec2:DescribeVpcAttribute
-            - ec2:DetachInternetGateway
-            - ec2:DetachVpnGateway
-            - ec2:DisassociateAddress
-            - ec2:DisassociateNatGatewayAddress
-            - ec2:DisassociateSubnetCidrBlock
-            - ec2:ModifySubnetAttribute
-            - ec2:ModifyVpcAttribute
-            - ec2:ModifyVpcEndpoint
-            - ec2:ModifyVpcTenancy
-            - ec2:ReplaceRoute
-            - ec2:RevokeSecurityGroupEgress
-            - ec2:RevokeSecurityGroupIngress
-            - ec2:UnassignPrivateNatGatewayAddress
-            - ec2:UpdateSecurityGroupRuleDescriptionsEgress
-            - ec2:UpdateSecurityGroupRuleDescriptionsIngress
-            - ecr:DeleteLifecyclePolicy
-            - ecr:DeleteRepositoryPolicy
-            - ecr:DescribeRepositories
-            - ecr:GetLifecyclePolicy
-            - ecr:GetRepositoryPolicy
-            - ecr:ListTagsForResource
-            - ecr:PutImageScanningConfiguration
-            - ecr:PutImageTagMutability
-            - ecr:PutLifecyclePolicy
-            - ecr:SetRepositoryPolicy
-            - ecr:TagResource
-            - ecr:UntagResource
-            - ecs:DescribeCapacityProviders
-            - ecs:DescribeClusters
-            - ecs:ListTagsForResource
-            - ecs:PutClusterCapacityProviders
-            - ecs:TagResource
-            - ecs:UntagResource
-            - ecs:UpdateCapacityProvider
-            - ecs:UpdateCluster
-            - ecs:UpdateClusterSettings
-            - elasticloadbalancing:AddTags
-            - elasticloadbalancing:DeregisterTargets
-            - elasticloadbalancing:ModifyCapacityReservation
-            - elasticloadbalancing:ModifyIpPools
-            - elasticloadbalancing:ModifyListener
-            - elasticloadbalancing:ModifyListenerAttributes
-            - elasticloadbalancing:ModifyLoadBalancerAttributes
-            - elasticloadbalancing:ModifyTargetGroup
-            - elasticloadbalancing:ModifyTargetGroupAttributes
-            - elasticloadbalancing:RegisterTargets
-            - elasticloadbalancing:RemoveTags
-            - elasticloadbalancing:SetIpAddressType
-            - elasticloadbalancing:SetSecurityGroups
-            - elasticloadbalancing:SetSubnets
-            - iam:GetInstanceProfile
-            - iam:GetRole
-            - iam:GetRolePolicy
-            - iam:GetUserPolicy
-            - iam:ListAttachedRolePolicies
-            - iam:ListRolePolicies
-            - logs:DeleteRetentionPolicy
-            - logs:GetDataProtectionPolicy
-            - logs:ListTagsForResource
-            - logs:PutLogGroupDeletionProtection
-            - logs:PutRetentionPolicy
-            - logs:TagResource
-            - logs:UntagResource
-            - rds:AddTagsToResource
-            - rds:DescribeDBClusters
-            - rds:DescribeDBInstanceAutomatedBackups
-            - rds:DescribeDBInstances
-            - rds:DescribeDBParameterGroups
-            - rds:DescribeDBSubnetGroups
-            - rds:ListTagsForResource
-            - rds:ModifyDBInstance
-            - rds:ModifyDBSubnetGroup
-            - rds:RebootDBInstance
-            - rds:RemoveTagsFromResource
-            - secretsmanager:DescribeSecret
-            - secretsmanager:GetSecretValue
-            - secretsmanager:TagResource
-            - secretsmanager:UntagResource
-            - secretsmanager:UpdateSecret
-            Resource:
-              Ref: FoundationResourceArns
-          - Sid: UpdatePinnedCompute
-            Effect: Allow
-            Action: autoscaling:UpdateAutoScalingGroup
-            Resource:
-              Ref: AutoScalingGroupArn
-            Condition:
-              Bool:
-                autoscaling:LaunchTemplateVersionSpecified: 'true'
-          - Sid: LaunchFoundationCompute
-            Effect: Allow
-            Action: ec2:RunInstances
-            Resource:
-            - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
-            - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*
-            - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*
-            - Fn::Sub: arn:${AWS::Partition}:ec2:${AWS::Region}::image/*
-            - Ref: LaunchTemplateArn
-            - Ref: ComputeSecurityGroupArn
-            - Fn::Select:
-              - 0
-              - Ref: ComputeSubnetArns
-            - Fn::Select:
-              - 1
-              - Ref: ComputeSubnetArns
-            Condition:
-              ArnEquals:
-                ec2:LaunchTemplate:
-                  Ref: LaunchTemplateArn
-          - Sid: PassInstanceRole
-            Effect: Allow
-            Action: iam:PassRole
-            Resource:
-              Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${ApplicationName}-ecs-instance
-            Condition:
-              StringEquals:
-                iam:PassedToService: ec2.amazonaws.com
-  # Bootstrap the API-only user with IAM; this account blocks CloudFormation login-profile probes.
-  # Neither the user nor its access key is created or exposed as a template output.
+        - PolicyName: foundation
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: InspectResources
+                Effect: Allow
+                Action:
+                  - autoscaling:DescribeAutoScalingGroups
+                  - autoscaling:DescribeAutoScalingInstances
+                  - autoscaling:DescribeInstanceRefreshes
+                  - autoscaling:DescribeLaunchConfigurations
+                  - autoscaling:DescribeLifecycleHooks
+                  - autoscaling:DescribeLoadBalancerTargetGroups
+                  - autoscaling:DescribeLoadBalancers
+                  - autoscaling:DescribeNotificationConfigurations
+                  - autoscaling:DescribeScalingActivities
+                  - autoscaling:DescribeTags
+                  - autoscaling:DescribeWarmPool
+                  - ec2:DescribeAccountAttributes
+                  - ec2:DescribeAddresses
+                  - ec2:DescribeAvailabilityZones
+                  - ec2:DescribeImages
+                  - ec2:DescribeInstanceTypeOfferings
+                  - ec2:DescribeInstanceTypes
+                  - ec2:DescribeInstances
+                  - ec2:DescribeInternetGateways
+                  - ec2:DescribeLaunchTemplateVersions
+                  - ec2:DescribeLaunchTemplates
+                  - ec2:DescribeNatGateways
+                  - ec2:DescribeNetworkAcls
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DescribeRouteTables
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeTags
+                  - ec2:DescribeVpcEncryptionControls
+                  - ec2:DescribeVpcEndpoints
+                  - ec2:DescribeVpcs
+                  - ec2:DescribeVpnGateways
+                  - elasticloadbalancing:DescribeCapacityReservation
+                  - elasticloadbalancing:DescribeListenerAttributes
+                  - elasticloadbalancing:DescribeListeners
+                  - elasticloadbalancing:DescribeLoadBalancerAttributes
+                  - elasticloadbalancing:DescribeLoadBalancers
+                  - elasticloadbalancing:DescribeTags
+                  - elasticloadbalancing:DescribeTargetGroupAttributes
+                  - elasticloadbalancing:DescribeTargetGroups
+                  - elasticloadbalancing:DescribeTargetHealth
+                  - iam:ListRoles
+                  - logs:DescribeIndexPolicies
+                  - logs:DescribeLogGroups
+                  - logs:DescribeResourcePolicies
+                  - rds:DescribeDBEngineVersions
+                  - rds:DescribeEvents
+                Resource: '*'
+
+              - Sid: AutoScaling
+                Effect: Allow
+                Action:
+                  - autoscaling:AttachLoadBalancerTargetGroups
+                  - autoscaling:AttachLoadBalancers
+                  - autoscaling:CancelInstanceRefresh
+                  - autoscaling:CreateOrUpdateTags
+                  - autoscaling:DeleteLifecycleHook
+                  - autoscaling:DeleteNotificationConfiguration
+                  - autoscaling:DeleteTags
+                  - autoscaling:DetachLoadBalancerTargetGroups
+                  - autoscaling:DetachLoadBalancers
+                  - autoscaling:DisableMetricsCollection
+                  - autoscaling:EnableMetricsCollection
+                  - autoscaling:PutLifecycleHook
+                  - autoscaling:PutNotificationConfiguration
+                  - autoscaling:ResumeProcesses
+                  - autoscaling:StartInstanceRefresh
+                  - autoscaling:SuspendProcesses
+                Resource:
+                  - arn:aws:autoscaling:ap-southeast-2:255235819297:autoScalingGroup:506b4496-5127-416c-a463-1a36056097b8:autoScalingGroupName/Infra-ECS-Cluster-chess-8fe63c01-ECSAutoScalingGroup-7oMxhcfgQQ7o
+
+              - Sid: CloudFront
+                Effect: Allow
+                Action:
+                  - cloudfront:GetDistribution
+                  - cloudfront:GetDistributionConfig
+                  - cloudfront:GetVpcOrigin
+                  - cloudfront:ListTagsForResource
+                  - cloudfront:TagResource
+                  - cloudfront:UntagResource
+                  - cloudfront:UpdateDistribution
+                  - cloudfront:UpdateDistributionWithStagingConfig
+                  - cloudfront:UpdateVpcOrigin
+                Resource:
+                  - arn:aws:cloudfront::255235819297:distribution/EGLESLDL54CK7
+                  - arn:aws:cloudfront::255235819297:vpcorigin/vo_4T9W3jOCvZWFD0pMrDvITl
+
+              - Sid: Network
+                Effect: Allow
+                Action:
+                  - ec2:AssignPrivateNatGatewayAddress
+                  - ec2:AssociateAddress
+                  - ec2:AssociateNatGatewayAddress
+                  - ec2:AssociateSubnetCidrBlock
+                  - ec2:AttachInternetGateway
+                  - ec2:AttachVpnGateway
+                  - ec2:AuthorizeSecurityGroupEgress
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:CreateLaunchTemplateVersion
+                  - ec2:CreateTags
+                  - ec2:DeleteTags
+                  - ec2:DescribeVpcAttribute
+                  - ec2:DetachInternetGateway
+                  - ec2:DetachVpnGateway
+                  - ec2:DisassociateAddress
+                  - ec2:DisassociateNatGatewayAddress
+                  - ec2:DisassociateSubnetCidrBlock
+                  - ec2:ModifySubnetAttribute
+                  - ec2:ModifyVpcAttribute
+                  - ec2:ModifyVpcEndpoint
+                  - ec2:ModifyVpcTenancy
+                  - ec2:ReplaceRoute
+                  - ec2:RevokeSecurityGroupEgress
+                  - ec2:RevokeSecurityGroupIngress
+                  - ec2:UnassignPrivateNatGatewayAddress
+                  - ec2:UpdateSecurityGroupRuleDescriptionsEgress
+                  - ec2:UpdateSecurityGroupRuleDescriptionsIngress
+                Resource:
+                  - arn:aws:ec2:ap-southeast-2:255235819297:elastic-ip/eipalloc-0ce42cdfc09229a23
+                  - arn:aws:ec2:ap-southeast-2:255235819297:internet-gateway/igw-06f9a5fe78cc59efd
+                  - arn:aws:ec2:ap-southeast-2:255235819297:launch-template/lt-02de6a81d5d368a7f
+                  - arn:aws:ec2:ap-southeast-2:255235819297:natgateway/nat-0c92e97a9194cc74b
+                  - arn:aws:ec2:ap-southeast-2:255235819297:route-table/rtb-0adb8148a68e8e025
+                  - arn:aws:ec2:ap-southeast-2:255235819297:route-table/rtb-0b448c11bc6f52eb1
+                  - arn:aws:ec2:ap-southeast-2:255235819297:route-table/rtb-0ff79c283257650f4
+                  - arn:aws:ec2:ap-southeast-2:255235819297:security-group/sg-01fdf3390591fc8e9
+                  - arn:aws:ec2:ap-southeast-2:255235819297:security-group/sg-0394107f55862d5b3
+                  - arn:aws:ec2:ap-southeast-2:255235819297:security-group/sg-0e6fb91e182a59231
+                  - arn:aws:ec2:ap-southeast-2:255235819297:subnet/subnet-0167f36bde26f9125
+                  - arn:aws:ec2:ap-southeast-2:255235819297:subnet/subnet-08cacd5f4d5b96f81
+                  - arn:aws:ec2:ap-southeast-2:255235819297:subnet/subnet-095f97795fcb8d8c3
+                  - arn:aws:ec2:ap-southeast-2:255235819297:subnet/subnet-0b4b12dc642015f7a
+                  - arn:aws:ec2:ap-southeast-2:255235819297:vpc-endpoint/vpce-0a2760d14d45d3dde
+                  - arn:aws:ec2:ap-southeast-2:255235819297:vpc/vpc-0cf0ba143de743e38
+
+              - Sid: Images
+                Effect: Allow
+                Action:
+                  - ecr:DeleteLifecyclePolicy
+                  - ecr:DeleteRepositoryPolicy
+                  - ecr:DescribeRepositories
+                  - ecr:GetLifecyclePolicy
+                  - ecr:GetRepositoryPolicy
+                  - ecr:ListTagsForResource
+                  - ecr:PutImageScanningConfiguration
+                  - ecr:PutImageTagMutability
+                  - ecr:PutLifecyclePolicy
+                  - ecr:SetRepositoryPolicy
+                  - ecr:TagResource
+                  - ecr:UntagResource
+                Resource:
+                  - arn:aws:ecr:ap-southeast-2:255235819297:repository/chess-backend
+
+              - Sid: Cluster
+                Effect: Allow
+                Action:
+                  - ecs:DescribeCapacityProviders
+                  - ecs:DescribeClusters
+                  - ecs:ListTagsForResource
+                  - ecs:PutClusterCapacityProviders
+                  - ecs:TagResource
+                  - ecs:UntagResource
+                  - ecs:UpdateCapacityProvider
+                  - ecs:UpdateCluster
+                  - ecs:UpdateClusterSettings
+                Resource:
+                  - arn:aws:ecs:ap-southeast-2:255235819297:capacity-provider/Infra-ECS-Cluster-chess-8fe63c01-AsgCapacityProvider-ItQ5EG9BExkj
+                  - arn:aws:ecs:ap-southeast-2:255235819297:cluster/chess
+
+              - Sid: LoadBalancer
+                Effect: Allow
+                Action:
+                  - elasticloadbalancing:AddTags
+                  - elasticloadbalancing:DeregisterTargets
+                  - elasticloadbalancing:ModifyCapacityReservation
+                  - elasticloadbalancing:ModifyIpPools
+                  - elasticloadbalancing:ModifyListener
+                  - elasticloadbalancing:ModifyListenerAttributes
+                  - elasticloadbalancing:ModifyLoadBalancerAttributes
+                  - elasticloadbalancing:ModifyTargetGroup
+                  - elasticloadbalancing:ModifyTargetGroupAttributes
+                  - elasticloadbalancing:RegisterTargets
+                  - elasticloadbalancing:RemoveTags
+                  - elasticloadbalancing:SetIpAddressType
+                  - elasticloadbalancing:SetSecurityGroups
+                  - elasticloadbalancing:SetSubnets
+                Resource:
+                  - arn:aws:elasticloadbalancing:ap-southeast-2:255235819297:listener/app/chess-alb/513a2baace70f96e/acfc081d159185d2
+                  - arn:aws:elasticloadbalancing:ap-southeast-2:255235819297:loadbalancer/app/chess-alb/513a2baace70f96e
+                  - arn:aws:elasticloadbalancing:ap-southeast-2:255235819297:targetgroup/chess-backend-tg/6d977bd76a3eb7db
+
+              - Sid: InspectRoles
+                Effect: Allow
+                Action:
+                  - iam:GetInstanceProfile
+                  - iam:GetRole
+                  - iam:GetRolePolicy
+                  - iam:GetUserPolicy
+                  - iam:ListAttachedRolePolicies
+                  - iam:ListRolePolicies
+                Resource:
+                  - arn:aws:iam::255235819297:instance-profile/chess-ecs-instance
+                  - arn:aws:iam::255235819297:role/chess-backend-cloudformation
+                  - arn:aws:iam::255235819297:role/chess-ecs-execution
+                  - arn:aws:iam::255235819297:role/chess-ecs-instance
+                  - arn:aws:iam::255235819297:user/chess-github-deploy
+
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:DeleteRetentionPolicy
+                  - logs:GetDataProtectionPolicy
+                  - logs:ListTagsForResource
+                  - logs:PutLogGroupDeletionProtection
+                  - logs:PutRetentionPolicy
+                  - logs:TagResource
+                  - logs:UntagResource
+                Resource:
+                  - arn:aws:logs:ap-southeast-2:255235819297:log-group:/ecs/chess
+                  - arn:aws:logs:ap-southeast-2:255235819297:log-group:/ecs/chess:*
+
+              - Sid: Database
+                Effect: Allow
+                Action:
+                  - rds:AddTagsToResource
+                  - rds:DescribeDBClusters
+                  - rds:DescribeDBInstanceAutomatedBackups
+                  - rds:DescribeDBInstances
+                  - rds:DescribeDBParameterGroups
+                  - rds:DescribeDBSubnetGroups
+                  - rds:ListTagsForResource
+                  - rds:ModifyDBInstance
+                  - rds:ModifyDBSubnetGroup
+                  - rds:RebootDBInstance
+                  - rds:RemoveTagsFromResource
+                Resource:
+                  - arn:aws:rds:ap-southeast-2:255235819297:db:chess-db
+                  - arn:aws:rds:ap-southeast-2:255235819297:subgrp:chess-db-subnets
+
+              - Sid: DatabaseSecret
+                Effect: Allow
+                Action:
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:TagResource
+                  - secretsmanager:UntagResource
+                  - secretsmanager:UpdateSecret
+                Resource:
+                  - arn:aws:secretsmanager:ap-southeast-2:255235819297:secret:chess/database-url-eEw1qq
+
+              - Sid: UpdatePinnedCompute
+                Effect: Allow
+                Action: autoscaling:UpdateAutoScalingGroup
+                Resource: arn:aws:autoscaling:ap-southeast-2:255235819297:autoScalingGroup:506b4496-5127-416c-a463-1a36056097b8:autoScalingGroupName/Infra-ECS-Cluster-chess-8fe63c01-ECSAutoScalingGroup-7oMxhcfgQQ7o
+                Condition:
+                  Bool:
+                    autoscaling:LaunchTemplateVersionSpecified: 'true'
+
+              - Sid: LaunchFoundationCompute
+                Effect: Allow
+                Action: ec2:RunInstances
+                Resource:
+                  - arn:aws:ec2:ap-southeast-2:255235819297:instance/*
+                  - arn:aws:ec2:ap-southeast-2:255235819297:network-interface/*
+                  - arn:aws:ec2:ap-southeast-2:255235819297:volume/*
+                  - arn:aws:ec2:ap-southeast-2::image/*
+                  - arn:aws:ec2:ap-southeast-2:255235819297:launch-template/lt-02de6a81d5d368a7f
+                  - arn:aws:ec2:ap-southeast-2:255235819297:security-group/sg-0394107f55862d5b3
+                  - arn:aws:ec2:ap-southeast-2:255235819297:subnet/subnet-08cacd5f4d5b96f81
+                  - arn:aws:ec2:ap-southeast-2:255235819297:subnet/subnet-0b4b12dc642015f7a
+                Condition:
+                  ArnEquals:
+                    ec2:LaunchTemplate: arn:aws:ec2:ap-southeast-2:255235819297:launch-template/lt-02de6a81d5d368a7f
+
+              - Sid: PassInstanceRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: arn:aws:iam::255235819297:role/chess-ecs-instance
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: ec2.amazonaws.com
+
+  # The API-only user is created once with IAM; its key stays in GitHub Secrets.
   InfrastructureUserPolicy:
     Type: AWS::IAM::UserPolicy
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      UserName:
-        Ref: InfrastructureUserName
+      UserName: chess-github-infra
       PolicyName: chess-foundation-deploy
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-        - Sid: InspectAndApplyFoundation
-          Effect: Allow
-          Action:
-          - cloudformation:DescribeStacks
-          - cloudformation:GetTemplate
-          - cloudformation:DescribeChangeSet
-          - cloudformation:DescribeEvents
-          - cloudformation:ExecuteChangeSet
-          - cloudformation:DeleteChangeSet
-          - cloudformation:SetStackPolicy
-          - cloudformation:TagResource
-          - cloudformation:UntagResource
-          Resource:
-            Fn::Sub: arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${FoundationStack}/*
-        - Sid: InspectValidation
-          Effect: Allow
-          Action: cloudformation:DescribeEvents
-          Resource:
-            Fn::Sub: arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/${FoundationStack}-*/*
-        - Sid: PlanWithFoundationRole
-          Effect: Allow
-          Action: cloudformation:CreateChangeSet
-          Resource:
-            Fn::Sub: arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${FoundationStack}/*
-          Condition:
-            StringEquals:
-              cloudformation:RoleArn:
-                Fn::GetAtt:
-                - FoundationRole
-                - Arn
-        - Sid: PassFoundationRole
-          Effect: Allow
-          Action: iam:PassRole
-          Resource:
-            Fn::GetAtt:
-            - FoundationRole
-            - Arn
-          Condition:
-            StringEquals:
-              iam:PassedToService: cloudformation.amazonaws.com
+          - Sid: InspectAndApplyFoundation
+            Effect: Allow
+            Action:
+              - cloudformation:DescribeStacks
+              - cloudformation:GetTemplate
+              - cloudformation:DescribeChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:SetStackPolicy
+              - cloudformation:TagResource
+              - cloudformation:UntagResource
+            Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${FoundationStack}/*'
+
+          # DescribeEvents fails with a change-set ARN resource scope in this account.
+          # Limit this metadata-only read to the deployment region.
+          - Sid: InspectValidation
+            Effect: Allow
+            Action: cloudformation:DescribeEvents
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:RequestedRegion: !Ref AWS::Region
+
+          - Sid: PlanWithFoundationRole
+            Effect: Allow
+            Action: cloudformation:CreateChangeSet
+            Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${FoundationStack}/*'
+            Condition:
+              StringEquals:
+                cloudformation:RoleArn: !GetAtt FoundationRole.Arn
+
+          - Sid: PassFoundationRole
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: !GetAtt FoundationRole.Arn
+            Condition:
+              StringEquals:
+                iam:PassedToService: cloudformation.amazonaws.com
+
 Outputs:
   FoundationRoleArn:
     Description: Execution role passed by the infrastructure workflow.
-    Value:
-      Fn::GetAtt:
-      - FoundationRole
-      - Arn
+    Value: !GetAtt FoundationRole.Arn
+
   InfrastructureUserName:
     Description: API-only user whose access key pair belongs in GitHub Secrets.
-    Value:
-      Ref: InfrastructureUserName
+    Value: chess-github-infra

@@ -2,16 +2,17 @@ name: Infrastructure
 
 on:
   pull_request:
-    paths: [infra/**, .github/workflows/infra.yml]
+    paths: [infra/**, .github/workflows/infra.yml, Makefile]
+
   workflow_dispatch:
     inputs:
       action:
-        description: Plan changes, or apply the exact change set already reviewed
+        description: Plan changes, or apply a reviewed plan
         type: choice
         options: [plan, apply]
         default: plan
       change_set:
-        description: Change set ARN from a successful plan (required for apply)
+        description: Change set ARN from plan (required for apply)
         type: string
 
 permissions:
@@ -22,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: pip install cfn-lint==1.60.0 guardpycfn==0.1.0
+      - run: pip install -r infra/requirements.txt
       - run: make infra-check
 
   foundation:
@@ -33,102 +34,44 @@ jobs:
     concurrency:
       group: aws-chess-production
       cancel-in-progress: false
-    env:
-      CHANGE_SET: ${{ inputs.change_set }}
+
     steps:
       - uses: actions/checkout@v4
-      - run: cat infra/production.env >> "$GITHUB_ENV"
 
-      - name: Check infrastructure credentials
+      - name: Read deployment settings
+        run: cat infra/production.env >> "$GITHUB_ENV"
+
+      - name: Check credentials
         env:
           ACCESS_KEY: ${{ secrets.AWS_INFRA_ACCESS_KEY_ID }}
           SECRET_KEY: ${{ secrets.AWS_INFRA_SECRET_ACCESS_KEY }}
         run: |
           if [[ -z "$ACCESS_KEY" || -z "$SECRET_KEY" ]]; then
-            echo '::error::Set AWS_INFRA_ACCESS_KEY_ID and AWS_INFRA_SECRET_ACCESS_KEY repository secrets. See infra/README.md.'
+            echo '::error::Set AWS_INFRA_ACCESS_KEY_ID and AWS_INFRA_SECRET_ACCESS_KEY repository secrets.'
             exit 1
           fi
 
-      # The API-only user may pass only the foundation execution role.
-      - uses: aws-actions/configure-aws-credentials@v4
+      - name: Authenticate
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_INFRA_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_INFRA_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Verify account
-        run: test "$(aws sts get-caller-identity --query Account --output text)" = "$AWS_ACCOUNT_ID"
+      - name: Plan or apply
+        env:
+          ACTION: ${{ inputs.action }}
+          CHANGE_SET: ${{ inputs.change_set }}
+        run: bash infra/foundation.sh "$ACTION" "$CHANGE_SET"
 
-      - name: Plan
-        if: inputs.action == 'plan'
-        run: |
-          hash=$(sha256sum infra/foundation.yaml | cut -d ' ' -f 1)
-          aws cloudformation describe-stacks --stack-name "$FOUNDATION_STACK" > "$RUNNER_TEMP/stack.json"
-          parameters=$(jq --arg hash "$hash" '[
-            .Stacks[0].Parameters[] | select(.ParameterKey != "TemplateRevision") |
-            {ParameterKey, UsePreviousValue: true}
-          ] + [{ParameterKey: "TemplateRevision", ParameterValue: $hash}]' "$RUNNER_TEMP/stack.json")
-          change_set=$(aws cloudformation create-change-set \
-            --stack-name "$FOUNDATION_STACK" \
-            --change-set-name "$FOUNDATION_STACK-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
-            --change-set-type UPDATE \
-            --description "commit=$GITHUB_SHA template=$hash" \
-            --template-body file://infra/foundation.yaml \
-            --parameters "$parameters" \
-            --role-arn "arn:aws:iam::$AWS_ACCOUNT_ID:role/$FOUNDATION_ROLE" \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --query Id --output text)
-
-          wait_status=0
-          aws cloudformation wait change-set-create-complete --change-set-name "$change_set" || wait_status=$?
-          aws cloudformation describe-change-set --change-set-name "$change_set" > "$RUNNER_TEMP/changes.json"
-          aws cloudformation describe-events --change-set-name "$change_set" > "$RUNNER_TEMP/validation.json"
-          printf 'Change set: %s\n\nCommit: %s\n\n' "$change_set" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
-          if (( wait_status != 0 )); then
-            if jq -e '.Status == "FAILED" and
-              ((.Changes // []) | length == 0) and
-              (.StatusReason | startswith("The submitted information didn\u0027t contain changes."))' \
-              "$RUNNER_TEMP/changes.json" > /dev/null; then
-              echo 'No infrastructure changes. Nothing to apply.' >> "$GITHUB_STEP_SUMMARY"
-              exit 0
-            fi
-            jq -r '.StatusReason' "$RUNNER_TEMP/changes.json"
-            exit "$wait_status"
-          fi
-          jq -r '.Changes[].ResourceChange | "- \(.Action) \(.LogicalResourceId) (replacement: \(.Replacement // "N/A"))"' \
-            "$RUNNER_TEMP/changes.json" >> "$GITHUB_STEP_SUMMARY"
-
-      - uses: actions/upload-artifact@v4
+      - name: Save plan
         if: inputs.action == 'plan' && !cancelled()
+        uses: actions/upload-artifact@v4
         with:
           name: infrastructure-plan
           path: |
             ${{ runner.temp }}/changes.json
             ${{ runner.temp }}/validation.json
-
-      - name: Apply the reviewed change set
-        if: inputs.action == 'apply'
-        run: |
-          test -n "$CHANGE_SET"
-          hash=$(sha256sum infra/foundation.yaml | cut -d ' ' -f 1)
-          stack=$(aws cloudformation describe-stacks --stack-name "$FOUNDATION_STACK" --query 'Stacks[0].StackId' --output text)
-          aws cloudformation describe-change-set --change-set-name "$CHANGE_SET" > "$RUNNER_TEMP/changes.json"
-          # CreateChangeSet enforces the role through IAM; DescribeChangeSet has no RoleARN field.
-          jq -e --arg stack "$stack" --arg description "commit=$GITHUB_SHA template=$hash" '
-            .StackId == $stack and .Status == "CREATE_COMPLETE" and
-            .ExecutionStatus == "AVAILABLE" and .Description == $description
-          ' "$RUNNER_TEMP/changes.json"
-
-          # The execution role covers existing resources. IAM changes and new or
-          # replacement resources require a separately reviewed operator change.
-          jq -e 'all(.Changes[].ResourceChange;
-            .Action == "Modify" and .Replacement == "False" and
-            (.ResourceType | startswith("AWS::IAM::") | not))' "$RUNNER_TEMP/changes.json"
-
-          aws cloudformation set-stack-policy --stack-name "$FOUNDATION_STACK" \
-            --stack-policy-body file://infra/stack-policy.json
-          aws cloudformation execute-change-set --change-set-name "$CHANGE_SET" --no-disable-rollback
-          aws cloudformation wait stack-update-complete --stack-name "$FOUNDATION_STACK"
 
   backend:
     needs: foundation

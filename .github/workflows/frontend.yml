@@ -3,24 +3,21 @@ name: Frontend
 on:
   push:
     branches: [main]
-    paths: [apps/frontend/**, .github/workflows/pages.yml]
+    paths: [apps/frontend/**, .github/workflows/frontend.yml]
+  pull_request:
+    paths: [apps/frontend/**, .github/workflows/frontend.yml]
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
+  group: pages-${{ github.event_name == 'pull_request' && github.ref || 'production' }}
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     env:
       VITE_BACKEND_URL: ${{ vars.VITE_BACKEND_URL }}
     defaults:
@@ -39,16 +36,33 @@ jobs:
         run: |
           node --input-type=module -e '
             const url = new URL(process.env.VITE_BACKEND_URL);
-            if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash)
+            const isOrigin = url.pathname === "/" && !url.search && !url.hash;
+            const hasCredentials = url.username || url.password;
+
+            if (url.protocol !== "https:" || hasCredentials || !isOrigin) {
               throw new Error("VITE_BACKEND_URL must be an HTTPS origin, such as https://203.0.113.10");
+            }
           '
 
       - run: npm ci
       - run: npm run check
       - run: npm run build
-      - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         with:
           path: apps/frontend/dist
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
       - id: deployment
         uses: actions/deploy-pages@v4

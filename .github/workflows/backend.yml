@@ -28,29 +28,14 @@ jobs:
       DEPLOY: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.AWS_DEPLOY_ENABLED == 'true' }}
       IMAGE: chess-backend:${{ github.sha }}
       COMPOSE_PROJECT_NAME: chess-ci-${{ github.run_id }}-${{ github.run_attempt }}
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate infrastructure
-        run: |
-          pip install cfn-lint==1.60.0 guardpycfn==0.1.0
-          make infra-check
-
-      - name: Build and check the image
-        run: |
-          make image IMAGE="$IMAGE"
-          docker compose up -d --no-build --wait postgres backend
-          bash infra/smoke.sh http://127.0.0.1:8000
-
-      - name: Clean up the local check
-        if: always()
-        run: docker compose down --volumes
-
-      - name: Load deployment target
-        if: env.DEPLOY == 'true'
+      - name: Read deployment settings
         run: cat infra/production.env >> "$GITHUB_ENV"
 
-      - name: Check deployment credentials
+      - name: Check credentials
         if: env.DEPLOY == 'true'
         env:
           ACCESS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -61,28 +46,53 @@ jobs:
             exit 1
           fi
 
-      - uses: aws-actions/configure-aws-credentials@v4
+      - name: Validate infrastructure
+        run: |
+          pip install -r infra/requirements.txt
+          make infra-check
+
+      - name: Build and test
+        run: |
+          make image IMAGE="$IMAGE"
+          docker compose up -d --no-build --wait postgres backend
+          bash infra/smoke.sh http://127.0.0.1:8000
+
+      - name: Clean up test containers
+        if: always()
+        run: docker compose down --volumes
+
+      - name: Authenticate
         if: env.DEPLOY == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - uses: aws-actions/amazon-ecr-login@v2
+      - name: Log in to ECR
         if: env.DEPLOY == 'true'
+        uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Push the checked image and deploy
+      - name: Publish image
         if: env.DEPLOY == 'true'
+        id: image
         run: |
-          test "$(aws sts get-caller-identity --query Account --output text)" = "$AWS_ACCOUNT_ID"
+          account=$(aws sts get-caller-identity --query Account --output text)
+          test "$account" = "$AWS_ACCOUNT_ID"
+
           repository=$(aws cloudformation describe-stacks --stack-name "$FOUNDATION_STACK" \
-            --output json | jq -er '.Stacks[0].Outputs[] | select(.OutputKey == "RepositoryUri") | .OutputValue')
-          pushed_image="$repository:$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          docker tag "$IMAGE" "$pushed_image"
-          # ECS runs this platform; pin its manifest rather than an image index.
-          docker push --platform linux/amd64 "$pushed_image"
+            --query 'Stacks[0].Outputs[?OutputKey==`RepositoryUri`].OutputValue | [0]' --output text)
+          tag="$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+
+          docker tag "$IMAGE" "$repository:$tag"
+          docker push --platform linux/amd64 "$repository:$tag"
 
           digest=$(aws ecr batch-get-image --repository-name "${repository##*/}" \
-            --image-ids "imageTag=${pushed_image##*:}" --output json |
-            jq -er '.images[0].imageId.imageDigest')
-          bash infra/deploy.sh "$repository@$digest"
+            --image-ids "imageTag=$tag" --query 'images[0].imageId.imageDigest' --output text)
+          echo "uri=$repository@$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy and verify
+        if: env.DEPLOY == 'true'
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
+        run: bash infra/backend.sh "$IMAGE_URI"

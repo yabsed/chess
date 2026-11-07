@@ -2,7 +2,13 @@
 set -euo pipefail
 
 image=${1:?Pass an ECR image digest URI}
-: "${FOUNDATION_STACK:?}" "${BACKEND_STACK:?}" "${AWS_REGION:?}"
+
+set -a
+source infra/production.env
+set +a
+
+account=$(aws sts get-caller-identity --query Account --output text)
+[[ $account == "$AWS_ACCOUNT_ID" ]]
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -13,19 +19,15 @@ output() {
     "$work/foundation.json"
 }
 
-# A simultaneous foundation/app commit must apply the foundation first.
-expected=$(sha256sum infra/foundation.yaml | cut -d ' ' -f 1)
-applied=$(output TemplateRevision)
-if [[ $applied != "$expected" ]]; then
-  echo 'Apply the Infrastructure change set for this foundation.yaml, then rerun Backend.' >&2
-  exit 1
-fi
+# Compare CloudFormation values, so comments and spacing never block a release.
+aws cloudformation get-template --stack-name "$FOUNDATION_STACK" > "$work/applied.json"
+python3 infra/check.py "$work/applied.json"
 
 role=$(output BackendDeploymentRole)
 cluster=$(output ECSCluster)
 url=$(output ApiUrl)
 repository=$(output RepositoryUri)
-[[ $image == "$repository"@sha256:* ]]
+[[ $image == "$repository"@sha256:* && ${image##*@} =~ ^sha256:[a-f0-9]{64}$ ]]
 [[ $BACKEND_STACK == "$cluster-backend" ]]
 
 # Save the complete previous release, including configuration, before changing it.
@@ -42,12 +44,19 @@ elif ! grep -q 'does not exist' "$work/previous-error"; then
   exit 1
 fi
 
-aws cloudformation deploy \
-  --stack-name "$BACKEND_STACK" \
-  --template-file infra/backend.yaml \
-  --role-arn "$role" \
-  --parameter-overrides "FoundationStack=$FOUNDATION_STACK" "ImageUri=$image" \
-  --no-fail-on-empty-changeset
+deploy() {
+  local template=$1
+  shift
+
+  aws cloudformation deploy \
+    --stack-name "$BACKEND_STACK" \
+    --template-file "$template" \
+    --role-arn "$role" \
+    --parameter-overrides "$@" \
+    --no-fail-on-empty-changeset
+}
+
+deploy infra/backend.yaml "FoundationStack=$FOUNDATION_STACK" "ImageUri=$image"
 
 aws cloudformation describe-stacks --stack-name "$BACKEND_STACK" > "$work/deployed.json"
 task=$(jq -er '.Stacks[0].Outputs[] | select(.OutputKey == "TaskDefinition") | .OutputValue' "$work/deployed.json")
@@ -65,12 +74,7 @@ echo 'Release verification failed.' >&2
 if [[ $previous == true ]]; then
   mapfile -t parameters < "$work/previous-parameters"
   echo 'Restoring the previous template and parameters through CloudFormation.' >&2
-  aws cloudformation deploy \
-    --stack-name "$BACKEND_STACK" \
-    --template-file "$work/previous-template.yaml" \
-    --role-arn "$role" \
-    --parameter-overrides "${parameters[@]}" \
-    --no-fail-on-empty-changeset
+  deploy "$work/previous-template.yaml" "${parameters[@]}"
 
   aws cloudformation describe-stacks --stack-name "$BACKEND_STACK" > "$work/restored.json"
   restored_task=$(jq -er '.Stacks[0].Outputs[] | select(.OutputKey == "TaskDefinition") | .OutputValue' "$work/restored.json")
