@@ -46,6 +46,7 @@ Resources:
             InitProcessEnabled: true
             Capabilities:
               Drop: [ALL]
+
           PortMappings:
             - ContainerPort: 8000
               HostPort: 8000
@@ -113,6 +114,7 @@ Resources:
         DeploymentCircuitBreaker:
           Enable: true
           Rollback: true
+
       HealthCheckGracePeriodSeconds: 120
       EnableECSManagedTags: true
       EnableExecuteCommand: false

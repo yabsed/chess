@@ -1,4 +1,4 @@
-"""Read the existing foundation and print deployment-access.yaml parameters."""
+"""Read the existing foundation and print parameters for bootstrap/access.yaml."""
 
 import json
 import os
@@ -38,7 +38,8 @@ def parameters():
         return value
 
     def arn(service, resource, global_service=False):
-        return f'arn:{partition}:{service}:{"" if global_service else region}:{account}:{resource}'
+        scope = '' if global_service else region
+        return f'arn:{partition}:{service}:{scope}:{account}:{resource}'
 
     def checked_arn(value, service):
         if not value.startswith(arn(service, '')) or not re.fullmatch(
@@ -65,10 +66,10 @@ def parameters():
         ('S3Endpoint', 'VPCEndpoint', 'vpc-endpoint'),
         ('VPC', 'VPC', 'vpc'),
     )
-    network_arns = [
-        arn('ec2', f'{arn_type}/{physical(logical_id, f"EC2::{resource_type}")}')
-        for logical_id, resource_type, arn_type in network
-    ]
+    network_arns = []
+    for logical_id, resource_type, arn_type in network:
+        resource_id = physical(logical_id, f'EC2::{resource_type}')
+        network_arns.append(arn('ec2', f'{arn_type}/{resource_id}'))
 
     # CloudFormation records the EIP address, while IAM needs its allocation ID.
     public_ip = physical('NatAddress', 'EC2::EIP')

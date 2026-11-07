@@ -78,8 +78,8 @@ migrations before rolling out the code that uses them.
 The frontend runs on GitHub Pages. The backend runs on ECS on EC2, reached through
 CloudFront and a private ALB. RDS PostgreSQL holds the shared state.
 
-[`infra/foundation.yaml`](infra/foundation.yaml) manages the infrastructure.
-[`infra/backend.yaml`](infra/backend.yaml) manages the ECS task and service.
+[`infra/foundation/template.yaml`](infra/foundation/template.yaml) manages the infrastructure.
+[`infra/backend/template.yaml`](infra/backend/template.yaml) manages the ECS task and service.
 GitHub Actions deploys backend images by digest through CloudFormation; it verifies
 the running release and the public HTTP and WebSocket endpoints.
 

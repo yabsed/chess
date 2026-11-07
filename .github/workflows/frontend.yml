@@ -3,9 +3,15 @@ name: Frontend
 on:
   push:
     branches: [main]
-    paths: [apps/frontend/**, .github/workflows/frontend.yml]
+    paths:
+      - apps/frontend/**
+      - .github/workflows/frontend.yml
+
   pull_request:
-    paths: [apps/frontend/**, .github/workflows/frontend.yml]
+    paths:
+      - apps/frontend/**
+      - .github/workflows/frontend.yml
+
   workflow_dispatch:
 
 permissions:
@@ -44,9 +50,12 @@ jobs:
             }
           '
 
-      - run: npm ci
-      - run: npm run check
-      - run: npm run build
+      - name: Check and build
+        run: |
+          npm ci
+          npm run check
+          npm run build
+
       - uses: actions/upload-pages-artifact@v3
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         with:

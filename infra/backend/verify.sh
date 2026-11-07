@@ -11,8 +11,10 @@ jq -e --arg task "$task" '
   (.failures | length) == 0 and
   (.services | length) == 1 and
   (.services[0] |
-    .taskDefinition == $task and .desiredCount > 0 and
-    .runningCount == .desiredCount and .pendingCount == 0 and
+    .taskDefinition == $task and
+    .desiredCount > 0 and
+    .runningCount == .desiredCount and
+    .pendingCount == 0 and
     (.deployments | length) == 1 and
     .deployments[0].rolloutState == "COMPLETED")
 ' <<< "$state" > /dev/null
@@ -26,10 +28,14 @@ running=$(aws ecs describe-tasks --cluster "$cluster" --tasks "${task_arns[@]}")
 count=$(jq '.services[0].desiredCount' <<< "$state")
 digest=${image##*@}
 jq -e --arg task "$task" --arg image "$image" --arg digest "$digest" --argjson count "$count" '
-  (.failures | length) == 0 and (.tasks | length) == $count and
+  (.failures | length) == 0 and
+  (.tasks | length) == $count and
   all(.tasks[];
-    .taskDefinitionArn == $task and .lastStatus == "RUNNING" and
+    .taskDefinitionArn == $task and
+    .lastStatus == "RUNNING" and
     any(.containers[];
-      .name == "backend" and .image == $image and
-      .imageDigest == $digest and .healthStatus == "HEALTHY"))
+      .name == "backend" and
+      .image == $image and
+      .imageDigest == $digest and
+      .healthStatus == "HEALTHY"))
 ' <<< "$running" > /dev/null
