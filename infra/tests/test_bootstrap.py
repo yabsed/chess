@@ -10,7 +10,7 @@ from unittest.mock import Mock, call, patch
 from botocore.exceptions import ClientError
 
 from infra.bootstrap import parameters as bootstrap
-from infra.foundation.check_applied import comparable_template
+from infra.templates import comparable_template
 
 
 ACCOUNT = "123456789012"
@@ -93,7 +93,7 @@ class BootstrapParametersTests(unittest.TestCase):
         }.__getitem__
 
     def parameters(self):
-        return bootstrap.parameters(self.session, STACK, ACCOUNT)
+        return bootstrap.prepare_access_parameters(self.session, STACK, ACCOUNT)
 
     def main(self):
         environment = {

@@ -9,14 +9,14 @@ from pathlib import Path
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-from infra.foundation.check_applied import comparable_template
+from infra.templates import comparable_template
 
 
 FOUNDATION = Path(__file__).parents[1] / "foundation/template.yaml"
 ACCESS     = Path(__file__).with_name("access.yaml")
 
 
-def parameters(session, stack_name, expected_account):
+def prepare_access_parameters(session, stack_name, expected_account):
     identity = session.client("sts").get_caller_identity()
     account = identity["Account"]
     if account != expected_account:
@@ -114,7 +114,11 @@ def main():
             raise ValueError(f"Missing deployment settings: {', '.join(missing)}")
 
         session = boto3.Session(region_name=os.environ["AWS_REGION"])
-        values = parameters(session, os.environ["FOUNDATION_STACK"], os.environ["AWS_ACCOUNT_ID"])
+        values = prepare_access_parameters(
+            session,
+            stack_name       = os.environ["FOUNDATION_STACK"],
+            expected_account = os.environ["AWS_ACCOUNT_ID"],
+        )
         print(json.dumps(values, indent=2))
         return 0
     except (BotoCoreError, ClientError, KeyError, OSError, ValueError) as error:

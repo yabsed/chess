@@ -11,6 +11,7 @@ from unittest.mock import Mock, call, patch
 from botocore.exceptions import ClientError
 
 from infra.backend import release
+from infra.backend.smoke import SmokeError
 from infra.backend.verify import VerificationError
 
 
@@ -86,6 +87,7 @@ class ReleaseTests(unittest.TestCase):
 
         self.create_session = patch.object(release.boto3, "Session", return_value=self.session).start()
         self.verify = patch.object(release, "verify_service").start()
+        self.check_endpoint = patch.object(release, "check_endpoint").start()
         self.mock_run = patch.object(release.subprocess, "run", side_effect=self.run_command).start()
         patch.object(release.subprocess, "check_output", return_value="commit\n").start()
 
@@ -160,8 +162,14 @@ class ReleaseTests(unittest.TestCase):
             f"{key}={value}" for key, value in self.previous_parameters.items()
         ])
         self.assertEqual(self.verify.call_args_list, [
-            call(self.ecs, "chess", "backend-service", "new-task", NEW_IMAGE),
-            call(self.ecs, "chess", "backend-service", "previous-task", PREVIOUS_IMAGE),
+            call(
+                self.ecs, cluster="chess", service="backend-service",
+                task_definition="new-task", image_uri=NEW_IMAGE,
+            ),
+            call(
+                self.ecs, cluster="chess", service="backend-service",
+                task_definition="previous-task", image_uri=PREVIOUS_IMAGE,
+            ),
         ])
         for deployment in self.deployments:
             command = deployment["command"]
@@ -178,8 +186,10 @@ class ReleaseTests(unittest.TestCase):
             "FoundationStack=chess-foundation", f"ImageUri={NEW_IMAGE}",
         ])
         self.verify.assert_called_once_with(
-            self.ecs, "chess", "backend-service", "new-task", NEW_IMAGE,
+            self.ecs, cluster="chess", service="backend-service",
+            task_definition="new-task", image_uri=NEW_IMAGE,
         )
+        self.check_endpoint.assert_called_once_with("https://api.example.test")
         self.ecr.get_authorization_token.assert_not_called()
         self.assertIn(NEW_IMAGE, self.stdout.getvalue())
 
@@ -197,22 +207,12 @@ class ReleaseTests(unittest.TestCase):
         self.assert_restored()
         self.assertIn("restored and verified", self.stderr.getvalue())
 
-    def test_http_failure_restores_full_release_and_still_fails(self):
-        original_run = self.run_command
-        smoke_attempts = []
-
-        def fail_first_smoke(command, **options):
-            if command[:2] == ["bash", "infra/backend/smoke.sh"]:
-                smoke_attempts.append(command)
-                if len(smoke_attempts) == 1:
-                    raise subprocess.CalledProcessError(22, command)
-            return original_run(command, **options)
-
-        self.mock_run.side_effect = fail_first_smoke
+    def test_endpoint_failure_restores_full_release_and_still_fails(self):
+        self.check_endpoint.side_effect = [SmokeError("WebSocket handshake failed"), None]
 
         self.assertEqual(self.main("--digest", NEW_IMAGE), 1)
         self.assert_restored()
-        self.assertEqual(len(smoke_attempts), 2)
+        self.assertEqual(self.check_endpoint.call_count, 2)
 
     def test_sdk_verification_failure_also_restores(self):
         error = ClientError({"Error": {"Code": "AccessDenied", "Message": "Denied"}}, "DescribeTasks")

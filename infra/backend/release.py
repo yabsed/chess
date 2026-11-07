@@ -15,8 +15,9 @@ from tempfile import TemporaryDirectory
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
+from infra.backend.smoke import SmokeError, check_endpoint
 from infra.backend.verify import VerificationError, verify_service
-from infra.foundation.check_applied import check_applied
+from infra.templates import comparable_template
 
 
 @dataclass(frozen=True)
@@ -25,11 +26,11 @@ class Release:
     parameters: dict[str, str]
 
 
-def release(session, foundation_stack, backend_stack, local_image, image_digest):
+def release(session, foundation_stack, backend_stack, local_image, image_uri):
     cloudformation = session.client("cloudformation")
     foundation = stack_outputs(cloudformation, foundation_stack)
     applied = cloudformation.get_template(StackName=foundation_stack)
-    check_applied(applied["TemplateBody"])
+    require_applied_foundation(applied["TemplateBody"])
 
     role       = foundation["BackendDeploymentRole"]
     cluster    = foundation["ECSCluster"]
@@ -39,18 +40,18 @@ def release(session, foundation_stack, backend_stack, local_image, image_digest)
     if backend_stack != f"{cluster}-backend":
         raise ValueError("BACKEND_STACK must match the foundation cluster: <cluster>-backend.")
 
-    new_image = image_digest
+    new_image_uri = image_uri
     if local_image:
         print("Publishing image.", flush=True)
-        new_image = publish_image(session.client("ecr"), repository, local_image)
+        new_image_uri = publish_image(session.client("ecr"), repository, local_image)
 
-    check_image(repository, new_image)
+    check_image_uri(repository, new_image_uri)
 
     new_release = Release(
         template   = Path(__file__).with_name("template.yaml").read_text(),
         parameters = {
             "FoundationStack": foundation_stack,
-            "ImageUri":        new_image,
+            "ImageUri":        new_image_uri,
         },
     )
     previous_release = read_previous_release(cloudformation, backend_stack)
@@ -63,7 +64,7 @@ def release(session, foundation_stack, backend_stack, local_image, image_digest)
 
     print("Verifying ECS, HTTP and WebSockets.", flush=True)
     try:
-        verify_release(ecs, cluster, deployed, new_image, api_url)
+        verify_release(ecs, cluster, deployed, new_image_uri, api_url)
 
     except VerificationError as error:
         print(f"Release verification failed: {error}", file=sys.stderr)
@@ -76,29 +77,52 @@ def release(session, foundation_stack, backend_stack, local_image, image_digest)
         print("Restoring the previous template and parameters through CloudFormation.", flush=True)
         deploy(session, backend_stack, role, previous_release)
         restored = stack_outputs(cloudformation, backend_stack)
-        previous_image = previous_release.parameters["ImageUri"]
+        previous_image_uri = previous_release.parameters["ImageUri"]
 
-        verify_release(ecs, cluster, restored, previous_image, api_url)
+        verify_release(ecs, cluster, restored, previous_image_uri, api_url)
         print("Previous release restored and verified. The release still failed.", file=sys.stderr)
         raise
 
-    report_success(new_image, deployed["TaskDefinition"], api_url)
+    report_success(new_image_uri, deployed["TaskDefinition"], api_url)
     return 0
 
 
-def verify_release(ecs, cluster, deployed, image, api_url):
-    task    = deployed["TaskDefinition"]
-    service = deployed["Service"]
+def require_applied_foundation(applied):
+    template_path = Path(__file__).parents[1] / "foundation/template.yaml"
+    expected = comparable_template(template_path.read_text())
+    applied = comparable_template(applied)
+
+    # Backend releases ignore operator-only outputs. Bootstrap compares the full template.
+    for template in (applied, expected):
+        outputs = template.get("Outputs", {})
+        for name, output in list(outputs.items()):
+            if name.startswith("Bootstrap") and "Export" not in output:
+                del outputs[name]
+
+    if applied != expected:
+        raise ValueError("Apply the foundation changes before deploying the backend.")
+    print("Foundation matches the deployed template.")
+
+
+def verify_release(ecs, cluster, deployed, image_uri, api_url):
+    task_definition = deployed["TaskDefinition"]
+    service         = deployed["Service"]
 
     try:
-        verify_service(ecs, cluster, service, task, image)
-        subprocess.run(["bash", "infra/backend/smoke.sh", api_url], check=True)
-    except (ClientError, BotoCoreError, subprocess.CalledProcessError) as error:
+        verify_service(
+            ecs,
+            cluster         = cluster,
+            service         = service,
+            task_definition = task_definition,
+            image_uri       = image_uri,
+        )
+        check_endpoint(api_url)
+    except (ClientError, BotoCoreError, SmokeError) as error:
         raise VerificationError(str(error)) from error
 
 
-def report_success(image, task, api_url):
-    summary = f"Image: {image}\n\nTask: {task}\n\nAPI: {api_url}\n"
+def report_success(image_uri, task_definition, api_url):
+    summary = f"Image: {image_uri}\n\nTask definition: {task_definition}\n\nAPI: {api_url}\n"
     print(summary)
 
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
@@ -137,8 +161,8 @@ def read_previous_release(cloudformation, stack_name):
     return Release(template, parameters)
 
 
-def check_image(repository, image):
-    image_repository, separator, digest = image.partition("@")
+def check_image_uri(repository, image_uri):
+    image_repository, separator, digest = image_uri.partition("@")
 
     if image_repository != repository:
         raise ValueError("Image repository does not match the foundation ECR repository.")
@@ -229,7 +253,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     image = parser.add_mutually_exclusive_group(required=True)
     image.add_argument("local_image", nargs="?", help="Already built and tested local Docker image")
-    image.add_argument("--digest", help="Existing ECR image URI with a sha256 digest")
+    image.add_argument("--digest", dest="image_uri", help="Existing ECR image URI with a sha256 digest")
     args = parser.parse_args()
 
     try:
@@ -255,8 +279,8 @@ def main():
             foundation_stack = os.environ["FOUNDATION_STACK"],
             backend_stack    = os.environ["BACKEND_STACK"],
 
-            local_image  = args.local_image,
-            image_digest = args.digest,
+            local_image = args.local_image,
+            image_uri   = args.image_uri,
         )
     except (
         ValueError,

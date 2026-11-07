@@ -3,7 +3,8 @@ import json
 import unittest
 from unittest.mock import patch
 
-from infra.foundation.check_applied import check_applied, comparable_template
+from infra.backend.release import require_applied_foundation
+from infra.templates import comparable_template
 
 
 class AppliedTemplateTests(unittest.TestCase):
@@ -52,10 +53,10 @@ class AppliedTemplateTests(unittest.TestCase):
             with self.subTest(change=name):
                 original = copy.deepcopy(applied)
                 with patch(
-                    "infra.foundation.check_applied.Path.read_text",
+                    "infra.backend.release.Path.read_text",
                     return_value=json.dumps(self.template),
                 ):
-                    check_applied(applied)
+                    require_applied_foundation(applied)
 
                 self.assertEqual(applied, original)
 
@@ -82,11 +83,11 @@ class AppliedTemplateTests(unittest.TestCase):
                 original = copy.deepcopy(applied)
 
                 with patch(
-                    "infra.foundation.check_applied.Path.read_text",
+                    "infra.backend.release.Path.read_text",
                     return_value=json.dumps(self.template),
                 ):
                     with self.assertRaisesRegex(ValueError, "Apply the foundation"):
-                        check_applied(applied)
+                        require_applied_foundation(applied)
 
                 self.assertEqual(applied, original)
 

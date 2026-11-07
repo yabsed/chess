@@ -6,7 +6,7 @@ on:
     paths:
       - apps/backend/**
       - infra/backend/**
-      - infra/foundation/check_applied.py
+      - infra/templates.py
       - infra/tests/**
       - infra/requirements.txt
       - infra/validate.py
@@ -19,7 +19,7 @@ on:
     paths:
       - apps/backend/**
       - infra/backend/**
-      - infra/foundation/check_applied.py
+      - infra/templates.py
       - infra/tests/**
       - infra/requirements.txt
       - infra/validate.py
@@ -66,7 +66,7 @@ jobs:
         run: |
           make image IMAGE="$IMAGE"
           docker compose up -d --no-build --wait postgres backend
-          bash infra/backend/smoke.sh http://127.0.0.1:8000
+          python3 -m infra.backend.smoke http://127.0.0.1:8000
 
       - name: Clean up test containers
         if: always()

@@ -15,7 +15,7 @@ users existed before CloudFormation adoption.
 
 Workflows select when to run and which credentials to pass. Python programs hold
 deployment state and make the checks and recovery decisions. CloudFormation YAML
-declares the resources. The short `backend/smoke.sh` checks HTTP and WebSockets.
+declares the resources. `backend/smoke.py` checks HTTP and the Engine.IO WebSocket handshake.
 
 ```mermaid
 flowchart LR
@@ -73,6 +73,9 @@ as resource changes. Non-exported `Bootstrap*` outputs are also excluded from th
 backend check: they only supply the operator's access update. Bootstrap separately
 requires the complete reviewed template, including these outputs, before using it.
 Resource settings, resource metadata and existing backend outputs remain checked.
+The Backend comparison lives beside the release flow; `templates.py` only normalizes
+template representation and the legacy revision marker. Bootstrap uses that same
+normalization with its own full comparison.
 
 ECS handles failed rollouts. If post-deployment checks fail, the release script
 restores the previous template and all its parameters, verifies the restoration,
@@ -106,7 +109,7 @@ stack-level settings change; review its description before applying it.
 
 ## Run locally
 
-Run commands from the repository root on Linux with Bash, AWS CLI v2, Git, jq, curl
+Run commands from the repository root on Linux with Bash, AWS CLI v2, Git, curl
 and Python 3.11+ available. Publishing a local image also needs Docker. Install the
 deployment and validation dependencies before checking templates or releasing:
 
@@ -120,6 +123,16 @@ make infra-check
 This checks the templates and runs deployment tests with simulated AWS responses.
 Tests cover rejected plans, image verification and full release restoration without
 AWS credentials or changes to live resources.
+
+The endpoint check can also run directly:
+
+```sh
+python3 -m infra.backend.smoke http://127.0.0.1:8000
+```
+
+HTTP health requests retain curl's timeout and retry behavior. The WebSocket client
+checks the first Engine.IO open packet and its session ID, then closes the connection
+without sending application events. Local protocol tests exercise this handshake.
 
 For AWS operations, authenticate as the appropriate deployment user or operator.
 Copy `infra/production.env.example` to `infra/production.env`, fill in your target,

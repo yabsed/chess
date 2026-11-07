@@ -5,7 +5,13 @@ class VerificationError(RuntimeError):
     """The deployed service does not match the expected healthy release."""
 
 
-def verify_service(ecs, cluster: str, service: str, task: str, image: str) -> None:
+def verify_service(
+    ecs,
+    cluster: str,
+    service: str,
+    task_definition: str,
+    image_uri: str,
+) -> None:
     response = ecs.describe_services(cluster=cluster, services=[service])
 
     if response.get("failures"):
@@ -16,7 +22,7 @@ def verify_service(ecs, cluster: str, service: str, task: str, image: str) -> No
         raise VerificationError(f"Expected one ECS service named {service}.")
 
     deployed_service = services[0]
-    expect_field(deployed_service, "taskDefinition", task)
+    expect_field(deployed_service, "taskDefinition", task_definition)
 
     desired_count = deployed_service.get("desiredCount", 0)
     if desired_count <= 0:
@@ -40,11 +46,11 @@ def verify_service(ecs, cluster: str, service: str, task: str, image: str) -> No
         raise VerificationError("The described tasks do not match the desired task count.")
 
     for running_task in running_tasks:
-        verify_task(running_task, task, image)
+        verify_task(running_task, task_definition, image_uri)
 
 
-def verify_task(running_task: dict, expected_task: str, expected_image: str) -> None:
-    expect_field(running_task, "taskDefinitionArn", expected_task)
+def verify_task(running_task: dict, expected_task_definition: str, expected_image_uri: str) -> None:
+    expect_field(running_task, "taskDefinitionArn", expected_task_definition)
     expect_field(running_task, "lastStatus",        "RUNNING")
 
     backend_containers = [
@@ -56,9 +62,9 @@ def verify_task(running_task: dict, expected_task: str, expected_image: str) -> 
         raise VerificationError("A service task must have one backend container.")
 
     backend = backend_containers[0]
-    expected_digest = expected_image.rsplit("@", 1)[-1]
+    expected_digest = expected_image_uri.rsplit("@", 1)[-1]
 
-    expect_field(backend, "image",        expected_image)
+    expect_field(backend, "image",        expected_image_uri)
     expect_field(backend, "imageDigest",  expected_digest)
     expect_field(backend, "healthStatus", "HEALTHY")
 
