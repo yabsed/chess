@@ -34,7 +34,7 @@ make frontend
 
 `make backend` builds the backend image and starts it with PostgreSQL through
 Compose. The API runs on `127.0.0.1:8000`, PostgreSQL on `127.0.0.1:5432`.
-Local development and ECS use the same Dockerfile and startup command.
+Local development and ECS use the same Python 3.14 image and startup command.
 After backend changes, run `make backend` again. To serve a single public server
 through Caddy, set `CHESS_IP` and `CHESS_ORIGIN` in `.env`, then run
 `docker compose --profile public up -d --build`.
@@ -52,6 +52,10 @@ restoring them also restores repetition history.
 
 `game.py` owns chess rules. `room.py` seats players and commits their actions.
 `account.py` handles HTTP accounts; `main.py` connects sockets to those operations.
+
+SQL stays beside the operation that uses it. Parameterized queries use Python 3.14
+`t`-strings; Psycopg binds their values separately. Prepare complex values before
+the query, and keep each transaction around the complete operation.
 
 Lobby transactions serialize seating and room capacity across servers. Moves
 lock only their room, then recheck the player's session, seat and game revision.

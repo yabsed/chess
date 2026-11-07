@@ -15,18 +15,25 @@ MAX_ROOMS = 500
 
 def notify(db, *user_ids: int) -> None:
     # Wake these users and anyone viewing one of their games, after commit.
-    db.execute("""
+    users = list(user_ids)
+
+    db.execute(t"""
         SELECT pg_notify('chess', player.user_id::text)
         FROM players AS player
         LEFT JOIN rooms AS room ON room.id = player.room_id
-        WHERE player.user_id = ANY(%(user_ids)s)
-           OR room.white_id = ANY(%(user_ids)s)
-           OR room.black_id = ANY(%(user_ids)s)
-    """, {"user_ids": list(user_ids)})
+        WHERE player.user_id = ANY({users})
+           OR room.white_id = ANY({users})
+           OR room.black_id = ANY({users})
+    """)
 
 
 def authenticated(db, sid: str) -> dict:
-    player = db.execute("SELECT * FROM online_players WHERE sid = %s", (sid,)).fetchone()
+    player = db.execute(t"""
+        SELECT *
+        FROM online_players
+        WHERE sid = {sid}
+    """).fetchone()
+
     if player is None:
         raise HTTPException(401, "Your session has ended. Please reconnect.")
     return player
@@ -47,50 +54,69 @@ def expire(db) -> None:
 
 def connect(sid: str, key: str, invited_room_id: str | None) -> int:
     with lobby_transaction() as db:
-        session = db.execute("""
+        session = db.execute(t"""
             SELECT user_id
             FROM sessions
-            WHERE token_hash = %s
+            WHERE token_hash = {key}
               AND expires_at > now()
-        """, (key,)).fetchone()
+        """).fetchone()
+
         if session is None:
             raise HTTPException(401, "Please sign in again.")
 
         expire(db)
         user_id = session["user_id"]
-        player = db.execute("""
+
+        player = db.execute(t"""
             INSERT INTO players (user_id, sid, token_hash, seen_at)
-            VALUES (%(user_id)s, %(sid)s, %(token_hash)s, now())
+            VALUES ({user_id}, {sid}, {key}, now())
             ON CONFLICT (user_id) DO UPDATE
             SET sid        = EXCLUDED.sid,
                 token_hash = EXCLUDED.token_hash,
                 seen_at    = now(),
                 waiting_at = NULL
             RETURNING room_id
-        """, {"user_id": user_id, "sid": sid, "token_hash": key}).fetchone()
-        assert player is not None
+        """).fetchone()
 
-        current_room = db.execute("""
+        assert player is not None
+        room_id = player["room_id"]
+
+        current_room = db.execute(t"""
             SELECT *
             FROM rooms
-            WHERE id = %s
+            WHERE id = {room_id}
             FOR UPDATE
-        """, (player["room_id"],)).fetchone()
+        """).fetchone()
 
         if current_room is not None and not current_room["finished"]:
-            db.execute("UPDATE rooms SET updated_at = now() WHERE id = %s", (current_room["id"],))
+            db.execute(t"""
+                UPDATE rooms
+                SET updated_at = now()
+                WHERE id = {room_id}
+            """)
+
         else:
-            previous_room = db.execute("""
+            previous_room = db.execute(t"""
                 SELECT id
                 FROM rooms
-                WHERE id = %(room_id)s
-                  AND (white_id = %(user_id)s OR black_id = %(user_id)s)
-            """, {"room_id": invited_room_id, "user_id": user_id}).fetchone()
+                WHERE id = {invited_room_id}
+                  AND (white_id = {user_id} OR black_id = {user_id})
+            """).fetchone()
 
             room_id = previous_room["id"] if previous_room else None
-            db.execute("UPDATE players SET room_id = %s WHERE user_id = %s", (room_id, user_id))
+
+            db.execute(t"""
+                UPDATE players
+                SET room_id = {room_id}
+                WHERE user_id = {user_id}
+            """)
+
             if previous_room:
-                db.execute("UPDATE rooms SET updated_at = now() WHERE id = %s", (room_id,))
+                db.execute(t"""
+                    UPDATE rooms
+                    SET updated_at = now()
+                    WHERE id = {room_id}
+                """)
 
         notify(db, user_id)
         return user_id
@@ -99,49 +125,58 @@ def connect(sid: str, key: str, invited_room_id: str | None) -> int:
 def disconnect(sids: list[str]) -> None:
     with lobby_transaction() as db:
         # An old socket must never erase the connection that replaced it.
-        db.execute("""
+        db.execute(t"""
             UPDATE rooms
             SET updated_at = now()
             WHERE id IN (
-                SELECT room_id FROM players WHERE sid = ANY(%s)
+                SELECT room_id FROM players WHERE sid = ANY({sids})
             )
-        """, (sids,))
-        players = db.execute("""
+        """)
+
+        players = db.execute(t"""
             UPDATE players
             SET sid        = NULL,
                 token_hash = NULL,
                 seen_at    = NULL,
                 waiting_at = NULL
-            WHERE sid = ANY(%s)
+            WHERE sid = ANY({sids})
             RETURNING user_id
-        """, (sids,)).fetchall()
+        """).fetchall()
+
         notify(db, *(player["user_id"] for player in players))
 
 
 def heartbeat(sids: list[str]) -> None:
     with pool.connection() as db:
-        db.execute("UPDATE players SET seen_at = now() WHERE sid = ANY(%s)", (sids,))
+        db.execute(t"""
+            UPDATE players
+            SET seen_at = now()
+            WHERE sid = ANY({sids})
+        """)
 
 
 def create(db, white_id: int, black_id: int | None = None) -> str:
-    count = db.execute("SELECT count(*) AS total FROM rooms WHERE NOT finished").fetchone()
+    count = db.execute("""
+        SELECT count(*) AS total
+        FROM rooms
+        WHERE NOT finished
+    """).fetchone()
+
     assert count is not None
     if count["total"] >= MAX_ROOMS:
         raise HTTPException(503, "The server is full. Please try again later.")
 
     while True:
         room_id = secrets.token_hex(6)
-        inserted = db.execute("""
+        record  = Jsonb(Game().record())
+
+        inserted = db.execute(t"""
             INSERT INTO rooms (id, white_id, black_id, game)
-            VALUES (%(room_id)s, %(white_id)s, %(black_id)s, %(game)s)
+            VALUES ({room_id}, {white_id}, {black_id}, {record})
             ON CONFLICT (id) DO NOTHING
             RETURNING id
-        """, {
-            "room_id": room_id,
-            "white_id": white_id,
-            "black_id": black_id,
-            "game": Jsonb(Game().record()),
-        }).fetchone()
+        """).fetchone()
+
         if inserted:
             return room_id
 
@@ -152,24 +187,33 @@ def enter(sid: str, entry: Entry) -> None:
 
         player  = authenticated(db, sid)
         user_id = player["user_id"]
-        current_room = db.execute("""
+        room_id = player["room_id"]
+
+        current_room = db.execute(t"""
             SELECT *
             FROM rooms
-            WHERE id = %s
+            WHERE id = {room_id}
             FOR UPDATE
-        """, (player["room_id"],)).fetchone()
+        """).fetchone()
 
         if entry.type == "cancel":
-            if current_room and current_room["black_id"] is not None and not current_room["finished"]:
+            if (
+                current_room
+                and current_room["black_id"] is not None
+                and not current_room["finished"]
+            ):
                 raise InvalidAction("Resign before leaving an ongoing game.")
-            db.execute("""
+
+            db.execute(t"""
                 UPDATE players
                 SET room_id    = NULL,
                     waiting_at = NULL
-                WHERE user_id = %s
-            """, (user_id,))
+                WHERE user_id = {user_id}
+            """)
+
             if current_room and current_room["black_id"] is None:
-                db.execute("DELETE FROM rooms WHERE id = %s", (current_room["id"],))
+                db.execute(t"DELETE FROM rooms WHERE id = {room_id}")
+
             notify(db, user_id)
             return
 
@@ -179,23 +223,24 @@ def enter(sid: str, entry: Entry) -> None:
         participants = [user_id]
 
         if entry.type == "match":
-            opponent = db.execute("""
+            opponent = db.execute(t"""
                 SELECT user_id
                 FROM online_players
                 WHERE waiting_at IS NOT NULL
                   AND room_id IS NULL
-                  AND user_id <> %s
+                  AND user_id <> {user_id}
                 ORDER BY waiting_at, user_id
                 LIMIT 1
-            """, (user_id,)).fetchone()
+            """).fetchone()
 
             if opponent is None:
-                db.execute("""
+                db.execute(t"""
                     UPDATE players
                     SET room_id    = NULL,
                         waiting_at = COALESCE(waiting_at, now())
-                    WHERE user_id = %s
-                """, (user_id,))
+                    WHERE user_id = {user_id}
+                """)
+
                 notify(db, user_id)
                 return
 
@@ -210,88 +255,94 @@ def enter(sid: str, entry: Entry) -> None:
         elif entry.type == "join":
             if entry.id is None:
                 raise InvalidAction("Choose a game to join.")
-            invited_room = db.execute("""
+
+            room_id = entry.id
+
+            invited_room = db.execute(t"""
                 SELECT *
                 FROM rooms
-                WHERE id = %s
+                WHERE id = {room_id}
                 FOR UPDATE
-            """, (entry.id,)).fetchone()
+            """).fetchone()
+
             if invited_room is None:
                 raise HTTPException(404, "This game does not exist or has expired.")
             if invited_room["black_id"] is not None:
                 raise HTTPException(409, "This game already has two players.")
 
-            room_id = invited_room["id"]
-            db.execute("""
+            db.execute(t"""
                 UPDATE rooms
-                SET black_id   = %s,
+                SET black_id   = {user_id},
                     updated_at = now()
-                WHERE id = %s
-            """, (user_id, room_id))
+                WHERE id = {room_id}
+            """)
 
         else:
             raise InvalidAction("Unknown room action.")
 
-        db.execute("""
+        db.execute(t"""
             UPDATE players
-            SET room_id    = %s,
+            SET room_id    = {room_id},
                 waiting_at = NULL
-            WHERE user_id = ANY(%s)
-        """, (room_id, participants))
+            WHERE user_id = ANY({participants})
+        """)
+
         notify(db, user_id)
 
 
 def command(sid: str, command: Command) -> None:
     with pool.connection() as db:
-        room = db.execute("""
+        room = db.execute(t"""
             SELECT room.*
             FROM rooms AS room
             JOIN players AS player ON player.room_id = room.id
-            WHERE player.sid = %s
+            WHERE player.sid = {sid}
             FOR UPDATE OF room
-        """, (sid,)).fetchone()
+        """).fetchone()
 
         # A connection or seat may have changed while we waited for the room.
         player = authenticated(db, sid)
         if room is None or room["id"] != player["room_id"]:
             raise InvalidAction("Join a game first.")
 
-        game  = Game.restore(room["game"])
-        color = "white" if player["user_id"] == room["white_id"] else "black"
+        room_id = room["id"]
+        game    = Game.restore(room["game"])
+        color   = "white" if player["user_id"] == room["white_id"] else "black"
 
         if command.revision != game.revision:
             raise InvalidAction("The game has changed. Please try again.")
         if room["black_id"] is None:
             raise InvalidAction("Please wait for your opponent to join.")
 
-        connected = db.execute("""
+        connected = db.execute(t"""
             SELECT count(*) AS total
             FROM online_players
-            WHERE room_id = %s
-        """, (room["id"],)).fetchone()
+            WHERE room_id = {room_id}
+        """).fetchone()
+
         assert connected is not None
         if command.type != "resign" and connected["total"] < 2:
             raise InvalidAction("Please wait for your opponent to reconnect.")
 
         game.apply(color, command.type, command.move)
-        db.execute("""
+        record   = Jsonb(game.record())
+        finished = game.outcome is not None
+
+        db.execute(t"""
             UPDATE rooms
-            SET game       = %(game)s,
-                finished   = %(finished)s,
+            SET game       = {record},
+                finished   = {finished},
                 updated_at = now()
-            WHERE id = %(room_id)s
-        """, {
-            "game": Jsonb(game.record()),
-            "finished": game.outcome is not None,
-            "room_id": room["id"],
-        })
+            WHERE id = {room_id}
+        """)
+
         notify(db, player["user_id"])
 
 
 def read(sids: list[str]) -> dict[str, dict]:
     # A single statement sees seating, game and presence from the same DB snapshot.
     with pool.connection() as db:
-        rows = db.execute("""
+        rows = db.execute(t"""
             SELECT
                 player.sid, player.user_id, player.waiting_at,
                 room.id AS room_id, room.game,
@@ -322,9 +373,9 @@ def read(sids: list[str]) -> dict[str, dict]:
                 ON black_presence.user_id = black_user.id
                AND black_presence.room_id = room.id
 
-            WHERE player.sid = ANY(%s)
+            WHERE player.sid = ANY({sids})
               AND session.expires_at > now()
-        """, (sids,)).fetchall()
+        """).fetchall()
 
     return {row["sid"]: row for row in rows}
 

@@ -1,4 +1,4 @@
-FROM docker.io/library/python:3.13-slim-bookworm
+FROM docker.io/library/python:3.14-slim-bookworm
 COPY --from=ghcr.io/astral-sh/uv:0.11.16 /uv /bin/uv
 
 WORKDIR /app
