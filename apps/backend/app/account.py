@@ -16,12 +16,11 @@ from starlette.concurrency import run_in_threadpool
 from sqlalchemy                    import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc                import IntegrityError
-from sqlalchemy.orm                import Session as DatabaseSession, undefer
+from sqlalchemy.orm                import Session, undefer
 
-from . import room
-from .db       import lobby_transaction, sessions
-from .models   import LoginAttempt, LoginSession, Player, Room, User as Account
-from .protocol import Credentials, Session, User
+from .db       import lobby_transaction, notify, sessions
+from .models   import LoginAttempt, LoginSession, Player, Room, User
+from .protocol import Credentials, Profile, SessionResponse
 
 
 router         = APIRouter(prefix = "/api")
@@ -42,11 +41,11 @@ def request_key(request: Request) -> str:
     return session_key(token) if scheme.lower() == "bearer" else ""
 
 
-def find_user(key: str) -> User | None:
+def find_user(key: str) -> Profile | None:
     with sessions() as db:
         user = db.scalar(
-            select(Account)
-            .join(LoginSession, LoginSession.user_id == Account.id)
+            select(User)
+            .join(LoginSession, LoginSession.user_id == User.id)
             .where(
                 LoginSession.token_hash == key,
                 LoginSession.expires_at > func.now(),
@@ -54,10 +53,10 @@ def find_user(key: str) -> User | None:
         )
         if user is None:
             return None
-        return User.profile(user.id, user.username, user.avatar_version)
+        return Profile.for_user(user.id, user.username, user.avatar_version)
 
 
-async def current_user(request: Request) -> User:
+async def current_user(request: Request) -> Profile:
     key  = request_key(request)
     user = await run_in_threadpool(find_user, key)
     if user is None:
@@ -92,18 +91,18 @@ def login_attempt(request: Request, response: Response) -> None:
         raise HTTPException(429, "Too many attempts. Try again in a minute.")
 
 
-def new_session(db: DatabaseSession, user: User) -> Session:
+def new_session(db: Session, profile: Profile) -> SessionResponse:
     token = secrets.token_urlsafe(32)
     key   = session_key(token)
 
     db.execute(delete(LoginSession).where(LoginSession.expires_at <= func.now()))
-    db.add(LoginSession(token_hash = key, user_id = user.id))
+    db.add(LoginSession(token_hash = key, user_id = profile.id))
 
-    return Session(user = user, token = token)
+    return SessionResponse(user = profile, token = token)
 
 
 @router.post("/register", status_code = 201, dependencies = [Depends(login_attempt)])
-def register(credentials: Credentials) -> Session:
+def register(credentials: Credentials) -> SessionResponse:
     username = credentials.username.lower()
 
     # Bound password work without occupying database connections.
@@ -112,11 +111,11 @@ def register(credentials: Credentials) -> Session:
 
     try:
         with sessions.begin() as db:
-            user = Account(username = username, password_hash = hashed)
+            user = User(username = username, password_hash = hashed)
             db.add(user)
             db.flush()
 
-            profile = User.profile(user.id, user.username, user.avatar_version)
+            profile = Profile.for_user(user.id, user.username, user.avatar_version)
             return new_session(db, profile)
 
     except IntegrityError as error:
@@ -126,17 +125,21 @@ def register(credentials: Credentials) -> Session:
 
 
 @router.post("/session", dependencies = [Depends(login_attempt)])
-def login(credentials: Credentials) -> Session:
+def login(credentials: Credentials) -> SessionResponse:
     username = credentials.username.lower()
 
     with sessions() as db:
         user = db.scalar(
-            select(Account)
-            .where(Account.username == username)
-            .options(undefer(Account.password_hash))
+            select(User)
+            .where(User.username == username)
+            .options(undefer(User.password_hash))
         )
-        hashed  = user.password_hash if user else dummy_hash
-        profile = User.profile(user.id, user.username, user.avatar_version) if user else None
+
+        hashed  = dummy_hash
+        profile = None
+        if user:
+            hashed  = user.password_hash
+            profile = Profile.for_user(user.id, user.username, user.avatar_version)
 
     with password_slots:
         valid = password.verify(credentials.password, hashed)
@@ -148,7 +151,7 @@ def login(credentials: Credentials) -> Session:
 
 
 @router.get("/me")
-def me(request: Request, response: Response) -> User | None:
+def me(request: Request, response: Response) -> Profile | None:
     response.headers["Cache-Control"] = "no-store"
     return find_user(request_key(request))
 
@@ -172,10 +175,10 @@ def logout(request: Request):
             .returning(LoginSession.user_id)
         )
         if user_id is not None:
-            room.notify(db, user_id)
+            notify(db)
 
 
-def save_avatar(user_id: int, data: bytes) -> User:
+def save_avatar(user_id: int, data: bytes) -> Profile:
     try:
         with Image.open(BytesIO(data), formats = ("JPEG", "PNG", "WEBP")) as source:
             if source.width * source.height > 16_000_000:
@@ -194,16 +197,16 @@ def save_avatar(user_id: int, data: bytes) -> User:
     version = hashlib.sha256(data).hexdigest()[:16]
 
     with sessions.begin() as db:
-        user = db.get(Account, user_id)
+        user = db.get(User, user_id)
         assert user is not None
         user.avatar         = data
         user.avatar_version = version
-        room.notify(db, user_id)
-        return User.profile(user.id, user.username, user.avatar_version)
+        notify(db)
+        return Profile.for_user(user.id, user.username, user.avatar_version)
 
 
 @router.put("/me/avatar")
-async def upload_avatar(request: Request) -> User:
+async def upload_avatar(request: Request) -> Profile:
     user = await current_user(request)
     data = bytearray()
     async for chunk in request.stream():
@@ -216,12 +219,16 @@ async def upload_avatar(request: Request) -> User:
 @router.get("/users/{user_id}/avatar")
 def avatar(user_id: int) -> Response:
     with sessions() as db:
-        data = db.scalar(select(Account.avatar).where(Account.id == user_id))
+        data = db.scalar(select(User.avatar).where(User.id == user_id))
 
     if data is None:
         raise HTTPException(404, "No profile picture.")
 
     return Response(
-        data, media_type = "image/webp",
-        headers = {"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"},
+        data,
+        media_type = "image/webp",
+        headers = {
+            "Cache-Control":          "private, max-age=86400",
+            "X-Content-Type-Options": "nosniff",
+        },
     )

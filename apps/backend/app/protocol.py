@@ -21,19 +21,22 @@ class Auth(BaseModel):
     id    : RoomId | None = None
 
 
-class User(BaseModel):
+class Profile(BaseModel):
     id       : int
     username : str
     avatar   : str | None
 
     @classmethod
-    def profile(cls, id: int, username: str, version: str) -> "User":
-        avatar = f"/api/users/{id}/avatar?v={version}" if version else None
-        return cls(id = id, username = username, avatar = avatar)
+    def for_user(cls, user_id: int, username: str, avatar_version: str) -> "Profile":
+        avatar = None
+        if avatar_version:
+            avatar = f"/api/users/{user_id}/avatar?v={avatar_version}"
+
+        return cls(id = user_id, username = username, avatar = avatar)
 
 
-class Session(BaseModel):
-    user  : User
+class SessionResponse(BaseModel):
+    user  : Profile
     token : str
 
 
@@ -63,7 +66,7 @@ class Seat(BaseModel):
 
 
 class GameSnapshot(BoardSnapshot):
-    players   : dict[Color, User]
+    players   : dict[Color, Profile]
     connected : list[Color]
 
 

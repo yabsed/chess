@@ -1,4 +1,4 @@
-"""Short transactions and the shared lock for seating players."""
+"""Database connections, transactions and committed-change notifications."""
 
 import os
 
@@ -6,7 +6,7 @@ from contextlib import contextmanager
 
 from sqlalchemy        import create_engine, select, text
 from sqlalchemy.engine import make_url
-from sqlalchemy.orm    import sessionmaker
+from sqlalchemy.orm    import Session, sessionmaker
 
 from .models import Base, Room
 
@@ -38,6 +38,11 @@ def lobby_transaction():
         # Serialize seating and room capacity. Moves only lock their room row.
         db.execute(text("SELECT pg_advisory_xact_lock(1)"))
         yield db
+
+
+def notify(db: Session) -> None:
+    # PostgreSQL delivers this signal only if the transaction commits.
+    db.execute(text("NOTIFY chess"))
 
 
 def check() -> None:
