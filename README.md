@@ -89,11 +89,12 @@ the service's task definition and the public HTTP and WebSocket endpoints. ECS a
 CloudFormation handle failed rollouts; a failed public endpoint check stops the
 workflow for investigation without a second automatic deployment.
 
-Backend changes merged into `main` deploy automatically when `AWS_DEPLOY_ENABLED`
-is `true`. Review foundation changes in Git, then manually run the **Infrastructure**
-workflow on `main` to check and deploy them. Infrastructure and backend deployments
-run independently: deploy required infrastructure before releasing the app. Frontend
-changes use the existing Pages workflow.
+Backend and infrastructure changes pushed to `main` deploy automatically through
+the [AWS workflow](.github/workflows/deploy.yml) when `AWS_DEPLOY_ENABLED=true`.
+It checks the templates and backend image, applies foundation, then releases the
+backend. An unchanged foundation succeeds without resource updates; a failed
+foundation deployment stops the backend release. Pull requests only run checks.
+Frontend changes use the existing Pages workflow.
 
 See [infrastructure operations](infra/README.md) for credentials, deployment,
 rollback, capacity and data protection.
