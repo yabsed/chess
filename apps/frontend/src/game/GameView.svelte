@@ -172,7 +172,7 @@
           </button>
         {:else if room.inProgress}
           {#if game.connected.length < 2}
-            <p role="status">A disconnected player has up to 60 seconds to return.</p>
+            <p role="status">A disconnected player has up to 10 seconds to return.</p>
           {/if}
 
           <div class="commands">

@@ -23,7 +23,7 @@ Parameters:
 
   ECSImageId:
     Type:        AWS::EC2::Image::Id
-    Description: Pinned ECS-optimized AL2023 ARM64 AMI; resolved once by deploy.sh.
+    Description: Pinned ECS-optimized AL2023 ARM64 AMI; upgrades are explicit parameter changes.
 
 
 Resources:
@@ -368,7 +368,6 @@ Resources:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
 
     Properties:
-      # A new name permits replacement of the old awsvpc target group.
       Name:       !Sub '${ECSClusterName}-bridge-tg'
       VpcId:      !Ref VPC
       TargetType: instance
@@ -839,10 +838,6 @@ Resources:
 
 
 Outputs:
-  ComputeArchitecture:
-    Description: Used by deploy.sh to guard the one-time migration.
-    Value: arm64
-
   ECSCluster:
     Value: !Ref ECSCluster
     Export:

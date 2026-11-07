@@ -18,9 +18,9 @@ from .protocol import Command, Entry, GameSnapshot, Profile, RoomSnapshot, Seat
 MAX_ROOMS = 500
 
 # Both deadlines use Player.seen_at: first offline, then abandonment.
-HEARTBEAT_SECONDS = 10
-OFFLINE_SECONDS   = 35
-ABANDON_SECONDS   = 60
+HEARTBEAT_SECONDS = 2
+OFFLINE_SECONDS   = 5
+ABANDON_SECONDS   = 10
 
 ROOM_RETENTION = timedelta(hours = 24)
 

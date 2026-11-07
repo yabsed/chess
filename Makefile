@@ -33,4 +33,3 @@ serve:
 infra-check:
 	cfn-lint infra/foundation/template.yaml \
 		infra/backend/template.yaml
-	python3 -m unittest infra.test_migrate infra.test_foundation

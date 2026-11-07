@@ -50,51 +50,9 @@ so two tasks do not fit on one host. During a release, managed scaling can add a
 second host, start the new task, then drain the old one. Empty capacity scales in
 after a delay. Normal capacity is one host; the maximum is two.
 
-`deploy.sh` resolves the regional ECS-optimized AL2023 ARM64 AMI once and stores
-its ID in the `ECSImageId` stack parameter. Later deployments reuse that ID.
-To upgrade the AMI, explicitly update that parameter. Instance refresh and managed
-draining replace the hosts; occupied hosts are protected from ordinary scale-in.
-
-## First ARM deployment
-
-The first transition accepts downtime. Use **AWS → Run workflow → main**, with
-`migrate` checked and `AWS_DEPLOY_ENABLED=true`. Normal pushes intentionally stop
-before infrastructure changes until this migration has been prepared.
-
-After the ARM image passes checks, [migrate.py](migrate.py) performs these steps:
-
-1. Check the account, backend resources and target-group export consumers.
-2. Save the applied templates and stack parameters in the `before-arm` artifact.
-3. Make only the old NAT, EIP, default private routes, target group and backend
-   service disposable. Database retention and its stack policy stay intact.
-4. Delete the backend stack, stopping the service and releasing its imports.
-
-The workflow then deploys foundation and backend as usual. Foundation removes the
-NAT and EIP, replaces the IP target group with an instance target group, and moves
-the hosts to ARM/public subnets. Backend is recreated with the tested ARM image.
-The removed resources have `Delete` policies before removal, so they do not remain
-as retained, billable resources. Old retained task definitions contain no running
-compute.
-
-The migration runs with the infrastructure credentials. The external permission
-stack must allow reading both templates, `cloudformation:ListImports`, updating
-and deleting the backend stack, and passing its existing execution role. Normal
-foundation deployment also needs `ssm:GetParameter` on the public ECS ARM AMI path.
-Review these operator-managed permissions before the first run.
-
-If migration preparation fails before stack deletion, the old service remains.
-If the backend stack was deleted, fix the failed step and rerun with **migrate
-unchecked**. The preparation marker and saved templates allow recovery without
-repeating the deletion. Do not run overlapping manual stack operations.
-
-To restore the former architecture after a failed transition, first remove any
-recreated ARM backend service and stack to release its imports. Use an operator
-session to deploy `foundation-before.json` from the artifact with its saved
-parameters, then `backend-before.json` with its saved image URI and parameters.
-Restore foundation first: an x86 image cannot run on the new ARM hosts. This
-recreates the retired NAT infrastructure and resumes its charges. RDS is preserved
-in either direction. Once the ARM release succeeds, use ordinary image rollback
-below and leave `migrate` unchecked.
+The `ECSImageId` stack parameter pins the ECS-optimized AL2023 ARM64 AMI.
+Deployments reuse its existing value. Instance refresh and managed draining replace
+the hosts; occupied hosts are protected from ordinary scale-in.
 
 ## Settings
 
@@ -121,9 +79,8 @@ Keep credentials and secret values out of Git.
 
 ## Checks
 
-The workflow runs `cfn-lint` on both templates and tests the migration's destructive
-boundaries without AWS access. An `ubuntu-24.04-arm` runner builds and tests the
-ARM image with a fresh PostgreSQL database. The backend has the same 1 GiB limit
+The workflow runs `cfn-lint` on both templates. An `ubuntu-24.04-arm` runner builds
+and tests the ARM image with a fresh PostgreSQL database. The backend has the same 1 GiB limit
 and read-only filesystem as its ECS task. Checks cover HTTP and the Engine.IO
 WebSocket handshake; they are not a production load benchmark. After deployment
 the workflow checks the service's task definition and public endpoint.
@@ -167,8 +124,7 @@ docker compose -f infra/local/compose.yaml --profile public \
 
 ## Resource changes
 
-Keep existing resource logical IDs and cross-stack export names. The first ARM
-migration releases backend imports before replacing the target group. EC2
+Keep existing resource logical IDs and cross-stack export names. EC2
 capacity limits live in foundation; the container count is `DesiredCount` in backend.
 
 The database keeps encryption, backups, deletion protection and retention.
@@ -181,6 +137,25 @@ SQL schema changes need their own migration before deploying code that requires 
 
 CloudFormation handles failed stack updates; ECS rolls back failed container
 rollouts. A failed public endpoint check fails the workflow for investigation.
+
+For initial foundation provisioning, supply `ECSImageId` explicitly using an
+ECS-optimized AL2023 ARM64 AMI from the deployment region. The workflow updates
+the existing stacks; account setup and execution roles are managed by an operator.
+
+To upgrade the host AMI, use an operator session with `AWS_DEFAULT_REGION`,
+`AWS_ACCOUNT_ID`, `FOUNDATION_STACK`, `FOUNDATION_ROLE` and the reviewed
+`ECS_IMAGE_ID` set:
+
+```sh
+aws cloudformation deploy \
+  --stack-name "$FOUNDATION_STACK" \
+  --template-file infra/foundation/template.yaml \
+  --role-arn "arn:aws:iam::$AWS_ACCOUNT_ID:role/$FOUNDATION_ROLE" \
+  --parameter-overrides "ECSImageId=$ECS_IMAGE_ID" \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --no-disable-rollback \
+  --no-fail-on-empty-changeset
+```
 
 ## Roll back an image
 
@@ -214,3 +189,10 @@ image only; the current template and database must support that image.
 Keep one resource together: identity and retention settings, then properties.
 Separate property groups with one blank line and resources with two. Align nearby
 values and keep shell command options on separate lines.
+
+## History
+
+The ARM transition and NAT removal completed on 2026-11-08 (Asia/Seoul):
+[implementation](https://github.com/yabsed/chess/commit/e995b33203dc257c37523f274dcf18c18df1f4b8),
+[transition fix](https://github.com/yabsed/chess/commit/b58639411428fbf74b9f1ac712161d45be244c47),
+[successful deployment](https://github.com/yabsed/chess/actions/runs/42397948398).
