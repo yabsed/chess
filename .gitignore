@@ -4,6 +4,7 @@ __pycache__/
 node_modules/
 dist/
 .env
+/infra/production.env
 .DS_Store
 apps/backend/data/
 

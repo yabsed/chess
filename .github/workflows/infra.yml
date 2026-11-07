@@ -34,18 +34,24 @@ jobs:
     concurrency:
       group: aws-chess-production
       cancel-in-progress: false
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      FOUNDATION_STACK: ${{ vars.FOUNDATION_STACK }}
+      FOUNDATION_ROLE: ${{ vars.FOUNDATION_ROLE }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read deployment settings
-        run: cat infra/production.env >> "$GITHUB_ENV"
-
-      - name: Check credentials
+      - name: Check deployment settings
         env:
           ACCESS_KEY: ${{ secrets.AWS_INFRA_ACCESS_KEY_ID }}
           SECRET_KEY: ${{ secrets.AWS_INFRA_SECRET_ACCESS_KEY }}
         run: |
+          : "${AWS_REGION:?Set AWS_REGION repository variable}"
+          : "${AWS_ACCOUNT_ID:?Set AWS_ACCOUNT_ID repository variable}"
+          : "${FOUNDATION_STACK:?Set FOUNDATION_STACK repository variable}"
+          : "${FOUNDATION_ROLE:?Set FOUNDATION_ROLE repository variable}"
           if [[ -z "$ACCESS_KEY" || -z "$SECRET_KEY" ]]; then
             echo '::error::Set AWS_INFRA_ACCESS_KEY_ID and AWS_INFRA_SECRET_ACCESS_KEY repository secrets.'
             exit 1

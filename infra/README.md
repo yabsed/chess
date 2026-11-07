@@ -5,10 +5,11 @@ application, and Infrastructure plans or applies foundation changes.
 
 | File | Responsibility |
 | --- | --- |
-| `production.env` | Public account, region and stack names |
+| `production.env.example` | Example deployment settings; actual values live in GitHub Variables |
 | `foundation.yaml` | Network, traffic, database, compute and backend deployment permissions |
 | `backend.yaml` | ECS task definition and service |
 | `deployment-access.yaml` | Infrastructure caller policy and CloudFormation execution role |
+| `access.py` | Read existing foundation resources and prepare access-stack parameters |
 | `foundation.sh` | Create a plan or apply the exact reviewed plan |
 | `backend.sh` | Deploy an image digest and restore the previous release if verification fails |
 | `verify.sh` / `smoke.sh` | Check ECS state, running image, HTTP and WebSockets |
@@ -20,25 +21,51 @@ API-only deployment users were prepared before adoption.
 
 ## Settings and keys
 
-`production.env` is tracked in Git and contains no secrets. The `.env` ignore rule
-does not match it. Both AWS workflows load it into `GITHUB_ENV` before authentication,
-so `aws-region: ${{ env.AWS_REGION }}` receives its value from that file.
+Both AWS workflows receive deployment settings from GitHub repository variables.
+The scripts use the same environment variables locally. The expected account ID
+is checked against the authenticated account before accessing deployment resources.
 
 | GitHub repository setting | Value |
 | --- | --- |
 | Secret `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Existing `chess-github-deploy` key pair |
 | Secret `AWS_INFRA_ACCESS_KEY_ID` / `AWS_INFRA_SECRET_ACCESS_KEY` | Separate `chess-github-infra` key pair |
 | Variable `AWS_DEPLOY_ENABLED` | `true` enables backend deployment |
+| Variable `AWS_REGION` | AWS region containing the foundation |
+| Variable `AWS_ACCOUNT_ID` | Expected deployment account ID |
+| Variable `FOUNDATION_STACK` | Existing foundation stack name |
+| Variable `BACKEND_STACK` | Backend stack name, matching `<ECS cluster>-backend` |
+| Variable `FOUNDATION_ROLE` | Foundation CloudFormation execution role name |
 | Variable `VITE_BACKEND_URL` | Public HTTPS API origin used by the frontend |
 
 AWS authentication uses access keys. Each ID and secret must come from the same
-issuance. PR checks need no AWS keys. Infrastructure always needs its own pair;
-`AWS_DEPLOY_ENABLED` controls only Backend. The reusable Backend workflow receives
+issuance. PR checks need no AWS keys or deployment variables. Infrastructure always
+needs its own pair; `AWS_DEPLOY_ENABLED` controls only Backend. The reusable Backend workflow receives
 only the backend pair. Existing SSH secrets are unused.
 
 The database URL stays in Secrets Manager. ECS injects it at task startup; changing
 its value requires a coordinated application redeployment. It never belongs in
 GitHub variables, template outputs, logs or artifacts.
+
+For local deployment, copy `infra/production.env.example` to
+`infra/production.env`, fill in the target environment, and export it explicitly:
+
+```sh
+set -a
+source infra/production.env
+set +a
+```
+
+The real file is ignored by Git. To register those same non-secret settings for CI:
+
+```sh
+gh variable set --env-file infra/production.env
+```
+
+Variables separate deployment configuration from source code; they are not secret
+storage and are not masked in logs. Deployment logs and plan artifacts can contain
+account IDs and resource ARNs. Before making this repository public, also review
+its Git history and past Actions runs: removing a value from the current files does
+not remove earlier copies.
 
 ## Backend
 
@@ -83,13 +110,36 @@ only stack-level settings change; review its description before applying it.
 
 ## Deployment access
 
-`chess-deployment-access` owns `deployment-access.yaml`. Its resource allowlist is
-written beside each service's actions. The foundation workflow cannot update this
-bootstrap stack or rewrite IAM policies and role trust. Its caller can plan and
+`chess-deployment-access` owns `deployment-access.yaml`. Account and region come
+from CloudFormation pseudo parameters. Generated resource identifiers are explicit
+stack parameters, prepared from the existing foundation by `access.py`; named
+project resources remain readable in the policy. The foundation workflow cannot
+update this bootstrap stack or rewrite IAM policies and role trust. Its caller can plan and
 apply the foundation and pass only `chess-foundation-cloudformation` to CloudFormation.
 The execution role can update the listed resources and launch the ASG's instances
 using a numbered version of its pinned launch template. It can read the database
 secret for CloudFormation's resource handler; the caller cannot read it directly.
+
+From an authenticated operator session with the deployment settings exported,
+prepare parameters and a change set:
+
+```sh
+umask 077
+python3 infra/access.py > /tmp/chess-access-parameters.json
+aws cloudformation create-change-set \
+  --stack-name chess-deployment-access \
+  --change-set-name configure-deployment-access \
+  --change-set-type UPDATE \
+  --template-body file://infra/deployment-access.yaml \
+  --parameters file:///tmp/chess-access-parameters.json \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+Use a fresh change-set name for each update. Review the resolved policy and change
+set before executing it. A no-change result needs no execution. `access.py` only reads the allowlisted logical resources;
+it never changes permissions or issues keys. Keep the generated file outside Git.
+The resulting policy must still name exact resources, including the pinned launch
+template, security group and private subnets. Do not replace them with wildcards.
 
 An operator creates the API-only infrastructure user once, deploys this bootstrap,
 and issues its key outside CloudFormation. Send both values directly to `gh secret
