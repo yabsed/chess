@@ -4,7 +4,7 @@
   import { backend } from '../http';
 
   import type { Room }  from './room.svelte';
-  import type { Color } from './protocol';
+  import type { Color } from '../protocol';
 
   let { room, color }: { room: Room; color: Color } = $props();
 
@@ -28,6 +28,7 @@
 
     if (room.connection === 'closed')       return game ? 'Disconnected' : 'Unable to connect';
     if (room.connection === 'disconnected') return 'Reconnecting to the server';
+    if (room.connection === 'connecting')   return 'Connecting to the server';
     if (!game)                             return 'Loading game';
 
     if (!room.hasOpponent)         return 'Waiting for a friend';
@@ -102,7 +103,8 @@
 {#if game}
   <div class="game-layout">
     <Board
-      {game} {color}
+      {game}
+      {color}
       canMove={room.allowed.move}
       onmove={(uci) => room.send('move', uci)}
     />
@@ -112,17 +114,19 @@
         <h2>Game</h2>
 
         {#each colors as player}
+          {@const profile = game.players[player]}
+
           <p class="row">
             <span class="identity">
               <span class="avatar">
-                {#if game.players[player]?.avatar}
-                  <img src={backend + game.players[player]?.avatar} alt="" />
+                {#if profile?.avatar}
+                  <img src={backend + profile.avatar} alt="" />
                 {:else}
-                  {game.players[player]?.username[0].toUpperCase() ?? '?'}
+                  {profile?.username[0].toUpperCase() ?? '?'}
                 {/if}
               </span>
               <span>
-                <strong>{game.players[player]?.username ?? 'Waiting…'}</strong><br />
+                <strong>{profile?.username ?? 'Waiting…'}</strong><br />
                 <small>{colorNames[player]}{player === color ? ' · You' : ''}</small>
               </span>
             </span>
@@ -133,11 +137,19 @@
         {#if !room.hasOpponent}
           <label for="invite">Share this link with a friend</label>
           <input
-            id="invite" readonly value={location.href}
+            id="invite"
+            readonly
+            value={location.href}
             onclick={(event) => event.currentTarget.select()}
           />
           <button onclick={copyLink}>Copy invite link</button>
-          <button class="secondary" disabled={!room.canSend} onclick={() => room.enter('cancel')}>Cancel game</button>
+          <button
+            class="secondary"
+            disabled={!room.canSend}
+            onclick={() => room.enter('cancel')}
+          >
+            Cancel game
+          </button>
         {/if}
 
         {#if game.outcome}
@@ -145,8 +157,19 @@
             {game.outcome.result === '*' ? 'No winner' : game.outcome.result}
             · {endReasons[game.outcome.reason] ?? game.outcome.reason}
           </p>
-          <button disabled={!room.canSend} onclick={() => room.enter('match')}>Find opponent</button>
-          <button class="secondary" disabled={!room.canSend} onclick={() => room.enter('create')}>Invite a friend</button>
+          <button
+            disabled={!room.canSend}
+            onclick={() => room.enter('match')}
+          >
+            Find opponent
+          </button>
+          <button
+            class="secondary"
+            disabled={!room.canSend}
+            onclick={() => room.enter('create')}
+          >
+            Invite a friend
+          </button>
         {:else if room.inProgress}
           {#if game.connected.length < 2}
             <p role="status">A disconnected player has up to 60 seconds to return.</p>
@@ -157,11 +180,15 @@
               <p>Your opponent offers a draw.</p>
 
               <div class="actions">
-                <button disabled={!room.allowed.accept_draw} onclick={() => room.send('accept_draw')}>
+                <button
+                  disabled={!room.allowed.accept_draw}
+                  onclick={() => room.send('accept_draw')}
+                >
                   Accept
                 </button>
                 <button
-                  class="secondary" disabled={!room.allowed.decline_draw}
+                  class="secondary"
+                  disabled={!room.allowed.decline_draw}
                   onclick={() => room.send('decline_draw')}
                 >
                   Decline
@@ -169,7 +196,8 @@
               </div>
             {:else}
               <button
-                class="secondary" disabled={!room.allowed.offer_draw}
+                class="secondary"
+                disabled={!room.allowed.offer_draw}
                 onclick={() => room.send('offer_draw')}
               >
                 {game.draw_offer ? 'Draw offered · Waiting' : 'Offer draw'}
@@ -178,14 +206,19 @@
 
             {#if room.hasDrawClaim}
               <button
-                class="secondary" disabled={!room.allowed.claim_draw}
+                class="secondary"
+                disabled={!room.allowed.claim_draw}
                 onclick={() => room.send('claim_draw')}
               >
                 Claim draw
               </button>
             {/if}
 
-            <button class="secondary" disabled={!room.allowed.resign} onclick={resign}>
+            <button
+              class="secondary"
+              disabled={!room.allowed.resign}
+              onclick={resign}
+            >
               Resign
             </button>
           </div>

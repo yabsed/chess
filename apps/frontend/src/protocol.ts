@@ -1,14 +1,20 @@
+export interface Profile {
+  id       : number;
+  username : string;
+  avatar   : string | null;
+}
+
+export interface SessionResponse {
+  user  : Profile;
+  token : string;
+}
+
+
 export type Color = 'white' | 'black';
 
 export interface Seat {
   id    : string;
   color : Color;
-}
-
-export interface User {
-  id       : number;
-  username : string;
-  avatar   : string | null;
 }
 
 export interface Entry {
@@ -30,7 +36,7 @@ export interface GameSnapshot {
   draw_offer     : Color | null;
   can_claim_draw : boolean;
 
-  players   : Partial<Record<Color, User>>;
+  players   : Partial<Record<Color, Profile>>;
   connected : Color[];
 }
 

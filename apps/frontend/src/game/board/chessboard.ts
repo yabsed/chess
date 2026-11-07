@@ -3,7 +3,7 @@ import { Markers, MARKER_TYPE }         from 'cm-chessboard/src/extensions/marke
 import { Accessibility }               from 'cm-chessboard/src/extensions/accessibility/Accessibility.js';
 
 import type { MoveInput }           from 'cm-chessboard/src/Chessboard.js';
-import type { Color, GameSnapshot } from '../protocol';
+import type { Color, GameSnapshot } from '../../protocol';
 
 import pieces       from 'cm-chessboard/assets/pieces/standard.svg?url&no-inline';
 import markerSprite from 'cm-chessboard/assets/extensions/markers/markers.svg?url&no-inline';

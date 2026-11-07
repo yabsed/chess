@@ -1,8 +1,15 @@
 <script lang="ts">
-  import { backend, http, setToken } from './http';
-  import type { User } from './game/protocol';
+  import { backend, http } from './http';
+  import type { Profile, SessionResponse } from './protocol';
 
-  let { user, onuser }: { user: User | null; onuser: (user: User | null) => void } = $props();
+  interface Props {
+    user      : Profile | null;
+    onlogin   : (session: SessionResponse) => void;
+    onlogout  : () => void;
+    onprofile : (profile: Profile) => void;
+  }
+
+  let { user, onlogin, onlogout, onprofile }: Props = $props();
 
   let registering = $state(false);
   let username    = $state('');
@@ -11,17 +18,20 @@
   let error       = $state('');
   let picker = $state<HTMLInputElement>();
 
+
   async function submit(event: SubmitEvent) {
     event.preventDefault();
+    if (busy) return;
+
     busy  = true;
     error = '';
+
     try {
       const path = registering ? 'register' : 'session';
       const session = await http.post(path, { json: { username, password } })
-        .json<{ user: User; token: string }>();
+        .json<SessionResponse>();
 
-      setToken(session.token);
-      onuser(session.user);
+      onlogin(session);
       password = '';
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Unable to sign in.';
@@ -33,16 +43,17 @@
   async function logout() {
     busy  = true;
     error = '';
+
     try {
       await http.delete('session');
-      setToken('');
-      onuser(null);
+      onlogout();
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Unable to sign out.';
     } finally {
       busy = false;
     }
   }
+
 
   async function upload(event: Event) {
     const input = event.currentTarget as HTMLInputElement;
@@ -57,8 +68,10 @@
     }
 
     busy = true;
+
     try {
-      onuser(await http.put('me/avatar', { body: file }).json<User>());
+      const profile = await http.put('me/avatar', { body: file }).json<Profile>();
+      onprofile(profile);
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Unable to upload this image.';
     } finally {
@@ -66,25 +79,43 @@
       busy = false;
     }
   }
+
+  function toggleRegistration() {
+    registering = !registering;
+    error = '';
+  }
 </script>
 
 {#if user}
   <div class="row account">
     <div class="identity">
-      <button class="avatar" disabled={busy} onclick={() => picker?.click()} aria-label="Change profile picture">
+      <button
+        class="avatar"
+        disabled={busy}
+        onclick={() => picker?.click()}
+        aria-label="Change profile picture"
+      >
         {#if user.avatar}
           <img src={backend + user.avatar} alt="" />
         {:else}
           {user.username[0].toUpperCase()}
         {/if}
       </button>
-      <input bind:this={picker} type="file" accept="image/jpeg,image/png,image/webp" hidden onchange={upload} />
+      <input
+        bind:this={picker}
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        hidden
+        onchange={upload}
+      />
       <div>
         <strong>{user.username}</strong>
         <small>Click your picture to change it</small>
       </div>
     </div>
-    <button class="secondary" disabled={busy} onclick={logout}>Sign out</button>
+    <button class="secondary" disabled={busy} onclick={logout}>
+      Sign out
+    </button>
   </div>
 {:else}
   <article class="login">
@@ -92,14 +123,28 @@
     <p>Sign in, find an opponent, make your move.</p>
     <form onsubmit={submit}>
       <label for="username">Username</label>
-      <input id="username" bind:value={username} autocomplete="username" required
-        pattern={'[a-zA-Z0-9_]{3,24}'} minlength="3" maxlength="24"
-        aria-describedby="username-hint" />
+      <input
+        id="username"
+        bind:value={username}
+        autocomplete="username"
+        required
+        pattern={'[a-zA-Z0-9_]{3,24}'}
+        minlength="3"
+        maxlength="24"
+        aria-describedby="username-hint"
+      />
       <small id="username-hint">3–24 letters, numbers or underscores. Case-insensitive.</small>
 
       <label for="password">Password</label>
-      <input id="password" bind:value={password} type="password" required minlength="8" maxlength="128"
-        autocomplete={registering ? 'new-password' : 'current-password'} />
+      <input
+        id="password"
+        bind:value={password}
+        type="password"
+        autocomplete={registering ? 'new-password' : 'current-password'}
+        required
+        minlength="8"
+        maxlength="128"
+      />
       <small>At least 8 characters.</small>
 
       <div class="actions">
@@ -112,10 +157,12 @@
             Sign in
           {/if}
         </button>
-        <button type="button" class="secondary" disabled={busy} onclick={() => {
-          registering = !registering;
-          error = '';
-        }}>
+        <button
+          type="button"
+          class="secondary"
+          disabled={busy}
+          onclick={toggleRegistration}
+        >
           {registering ? 'Already have an account?' : 'Create an account'}
         </button>
       </div>

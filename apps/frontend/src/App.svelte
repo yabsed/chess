@@ -1,32 +1,71 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { Room }    from './game/room.svelte';
-  import { http, setToken } from './http';
-  import Account     from './Account.svelte';
-  import GameView    from './game/GameView.svelte';
-  import type { User } from './game/protocol';
+  import { http, token, setToken } from './http';
 
-  const room = new Room();
-  const home = import.meta.env.BASE_URL;
-  let user  = $state<User | null>(null);
-  let ready = $state(false);
+  import Account  from './Account.svelte';
+  import GameView from './game/GameView.svelte';
+  import type { Profile, SessionResponse } from './protocol';
 
-  function setUser(next: User | null) {
-    if (next === null) setToken('');
-    const changed = user?.id !== next?.id;
-    user = next;
-    if (changed) {
-      if (user) room.open();
-      else      room.reset();
+  const home       = import.meta.env.BASE_URL;
+  const controller = new AbortController();
+  const room       = new Room(checkSession);
+
+  let user         = $state<Profile | null>(null);
+  let ready        = $state(false);
+  let accountError = $state('');
+
+
+  function acceptSession(session: SessionResponse) {
+    room.reset();
+    setToken(session.token);
+    user         = session.user;
+    accountError = '';
+    room.open();
+  }
+
+  function clearSession() {
+    room.reset();
+    setToken('');
+    user         = null;
+    accountError = '';
+  }
+
+  function updateProfile(profile: Profile) {
+    // An upload can finish after the session has ended.
+    if (user?.id === profile.id) user = profile;
+  }
+
+
+  async function checkSession() {
+    const sessionToken = token;
+
+    try {
+      const profile = await http.get('me', { signal: controller.signal })
+        .json<Profile | null>();
+
+      // A previous session's response must not replace a newer login.
+      if (controller.signal.aborted || token !== sessionToken) return;
+
+      accountError = '';
+      if (profile) user = profile;
+      else         clearSession();
+    } catch {
+      if (controller.signal.aborted || token !== sessionToken) return;
+      accountError = 'Unable to check your account. Refresh to try again.';
     }
   }
 
   onMount(() => {
-    const controller = new AbortController();
-    http.get('me', { signal: controller.signal }).json<User | null>()
-      .then(setUser)
-      .catch(() => { room.error = 'Unable to reach the server. Refresh to try again.'; })
-      .finally(() => { ready = true; });
+    async function start() {
+      await checkSession();
+      if (controller.signal.aborted) return;
+
+      if (user) room.open();
+      ready = true;
+    }
+
+    void start();
 
     return () => {
       controller.abort();
@@ -50,9 +89,18 @@
 
 <main>
   {#if ready}
-    <Account {user} onuser={setUser} />
+    <Account
+      {user}
+      onlogin={acceptSession}
+      onlogout={clearSession}
+      onprofile={updateProfile}
+    />
   {:else}
     <p class="notice" role="status">Loading your account…</p>
+  {/if}
+
+  {#if accountError}
+    <p class="notice error" role="alert">{accountError}</p>
   {/if}
 
   {#if room.error}
@@ -70,16 +118,27 @@
       <h1>{room.waiting ? 'Finding an opponent…' : 'Make your next move.'}</h1>
 
       {#if room.connection !== 'connected'}
-        <p role="status">{room.connection === 'closed' ? 'Disconnected. Refresh to reconnect.' : 'Connecting…'}</p>
+        <p role="status">
+          {room.connection === 'closed' ? 'Disconnected. Refresh to reconnect.' : 'Connecting…'}
+        </p>
       {/if}
 
       {#if room.waiting}
         <p role="status">Your game starts when another player joins.</p>
-        <button class="secondary" disabled={!room.canSend} onclick={() => room.enter('cancel')}>Cancel</button>
-      {:else if room.id}
+        <button
+          class="secondary"
+          disabled={!room.canSend}
+          onclick={() => room.enter('cancel')}
+        >
+          Cancel
+        </button>
+      {:else if room.linkedRoomId}
         <p>A friend has invited you to play.</p>
-        <button disabled={!room.canSend || !room.validInvite} onclick={() => room.enter('join')}>
-          {room.canSend ? 'Join as Black' : 'Joining…'}
+        <button
+          disabled={!room.canSend || !room.validInvite}
+          onclick={() => room.enter('join')}
+        >
+          Join as Black
         </button>
         <p><a href={home}>Back to home</a></p>
 
@@ -89,8 +148,19 @@
       {:else}
         <p>Find an opponent or invite a friend.</p>
         <div class="actions lobby-actions">
-          <button disabled={!room.canSend} onclick={() => room.enter('match')}>Find opponent</button>
-          <button class="secondary" disabled={!room.canSend} onclick={() => room.enter('create')}>Invite a friend</button>
+          <button
+            disabled={!room.canSend}
+            onclick={() => room.enter('match')}
+          >
+            Find opponent
+          </button>
+          <button
+            class="secondary"
+            disabled={!room.canSend}
+            onclick={() => room.enter('create')}
+          >
+            Invite a friend
+          </button>
         </div>
       {/if}
 

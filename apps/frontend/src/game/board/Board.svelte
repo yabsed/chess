@@ -2,7 +2,7 @@
   import { createBoard } from './chessboard';
 
   import type { Move }                from './chessboard';
-  import type { Color, GameSnapshot } from '../protocol';
+  import type { Color, GameSnapshot } from '../../protocol';
 
   interface Props {
     game    : GameSnapshot;
