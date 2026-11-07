@@ -10,7 +10,7 @@ import psycopg
 
 from fastapi                 import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from psycopg_pool            import PoolTimeout
+from sqlalchemy.exc          import SQLAlchemyError
 from pydantic                import ValidationError
 from socketio                import ASGIApp, AsyncServer
 from socketio.exceptions     import ConnectionRefusedError
@@ -43,10 +43,10 @@ sio = AsyncServer(
 )
 
 # Cache the source of each screen, so unchanged games need no reconstruction.
-clients : dict[str, str]    = {}  # socket -> user
-sent    : dict[str, dict]    = {}  # socket -> last delivered row
-pending : set[str]          = set()
-tasks   : list[asyncio.Task] = []
+clients : dict[str, str]           = {}  # socket -> user
+sent    : dict[str, room.RoomState] = {}  # socket -> last delivered state
+pending : set[str]                 = set()
+tasks   : list[asyncio.Task]        = []
 
 changed = asyncio.Event()
 
@@ -60,21 +60,21 @@ async def refresh(sids: list[str]) -> None:
     if not sids:
         return
 
-    rows = await run_in_threadpool(room.read, sids)
+    states = await run_in_threadpool(room.read, sids)
 
     for sid in sids:
         if sid not in clients:
             continue
 
-        row = rows.get(sid)
-        if row is None:
+        state = states.get(sid)
+        if state is None:
             await sio.emit("session_closed", "Signed out or connected in another tab.", to = sid)
             await sio.disconnect(sid)
-        elif row != sent.get(sid):
-            view = await run_in_threadpool(room.snapshot, row)
+        elif state != sent.get(sid):
+            view = await run_in_threadpool(room.snapshot, state)
             if sid in clients:
-                await sio.emit("state", view, to = sid)
-                sent[sid] = row
+                await sio.emit("state", view.model_dump(), to = sid)
+                sent[sid] = state
 
 
 async def listen() -> None:
@@ -123,7 +123,7 @@ async def update() -> None:
             sids = [sid for sid, user in clients.items() if user in users]
             await refresh(sids)
 
-        except (psycopg.Error, PoolTimeout):
+        except SQLAlchemyError:
             log.exception("Could not refresh connected players")
             await asyncio.sleep(1)
             wake(*clients.values())
@@ -145,11 +145,11 @@ async def shutdown() -> None:
     try:
         if clients:
             await run_in_threadpool(room.disconnect, list(clients))
-    except (psycopg.Error, PoolTimeout):
+    except SQLAlchemyError:
         log.exception("Could not release connections; their leases will expire")
 
     await sio.shutdown()
-    await run_in_threadpool(db.pool.close)
+    await run_in_threadpool(db.engine.dispose)
 
 
 app = ASGIApp(
@@ -167,7 +167,7 @@ async def health() -> Health:
 
     try:
         await run_in_threadpool(db.check)
-    except (psycopg.Error, PoolTimeout):
+    except SQLAlchemyError:
         raise HTTPException(503, "Database unavailable.") from None
 
     return Health(status = "ok")
@@ -185,14 +185,14 @@ async def connect(sid, environ, auth):
         raise ConnectionRefusedError("Invalid session or room.") from None
     except HTTPException as error:
         raise ConnectionRefusedError(error.detail) from None
-    except (psycopg.Error, PoolTimeout):
+    except SQLAlchemyError:
         raise ConnectionRefusedError("Server unavailable. Please reconnect.") from None
 
     clients[sid] = str(user_id)
     wake(str(user_id))
 
 
-async def act(sid, data, model, action) -> dict:
+async def act(sid, data, model, action) -> dict[str, str | None]:
     error = None
 
     try:
@@ -205,7 +205,7 @@ async def act(sid, data, model, action) -> dict:
         error = str(rejection)
     except HTTPException as rejection:
         error = rejection.detail
-    except (psycopg.Error, PoolTimeout):
+    except SQLAlchemyError:
         log.exception("Could not commit player action")
         return {"error": "Server unavailable. Reconnect to check the latest state."}
 
@@ -231,5 +231,5 @@ async def disconnect(sid, reason):
     sent.pop(sid, None)
     try:
         await run_in_threadpool(room.disconnect, [sid])
-    except (psycopg.Error, PoolTimeout):
+    except SQLAlchemyError:
         log.exception("Could not release player connection")

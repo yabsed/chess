@@ -5,6 +5,8 @@ from typing      import Literal
 
 import chess
 
+from pydantic import BaseModel
+
 Color  = Literal["white", "black"]
 Action = Literal["move", "resign", "claim_draw", "offer_draw", "accept_draw", "decline_draw"]
 
@@ -13,48 +15,79 @@ class InvalidAction(ValueError):
     """A command rejection to explain to the user, distinct from unexpected internal errors."""
 
 
+class Outcome(BaseModel):
+    result : Literal["1-0", "0-1", "1/2-1/2", "*"]
+    reason : str
+
+
+class GameRecord(BaseModel):
+    initial    : str
+    moves      : list[str]
+    revision   : int
+    draw_offer : Color | None
+    ending     : Outcome | None
+
+
+class BoardSnapshot(BaseModel):
+    revision    : int
+    fen         : str
+    turn        : Color
+    legal_moves : list[str]
+
+    moves     : list[str]
+    last_move : str | None
+    check     : str | None
+
+    outcome        : Outcome | None
+    draw_offer     : Color | None
+    can_claim_draw : bool
+
+
 @dataclass
 class Game:
     board : chess.Board = field(default_factory = chess.Board)
     moves : list[str]   = field(default_factory = list)
 
-    revision   : int                   = 0
-    draw_offer : Color | None          = None
-    ending     : dict[str, str] | None = None
+    revision   : int            = 0
+    draw_offer : Color | None   = None
+    ending     : Outcome | None = None
 
     @classmethod
-    def restore(cls, record: dict) -> "Game":
-        game = cls(board = chess.Board(record["initial"]))
-        for uci in record["moves"]:
+    def restore(cls, record: GameRecord) -> "Game":
+        game = cls(board = chess.Board(record.initial))
+        for uci in record.moves:
             game._move(game.turn, uci)
 
-        game.revision   = record["revision"]
-        game.draw_offer = record["draw_offer"]
-        game.ending     = record["ending"]
+        game.revision   = record.revision
+        game.draw_offer = record.draw_offer
+        game.ending     = record.ending
         return game
 
-    def record(self) -> dict:
+    def record(self) -> GameRecord:
         # FEN alone loses the history needed for repetition draws.
-        return {
-            "initial"    : self.board.root().fen(),
-            "moves"      : [move.uci() for move in self.board.move_stack],
-            "revision"   : self.revision,
-            "draw_offer" : self.draw_offer,
-            "ending"     : self.ending,
-        }
+        return GameRecord(
+            initial    = self.board.root().fen(),
+            moves      = [move.uci() for move in self.board.move_stack],
+            revision   = self.revision,
+            draw_offer = self.draw_offer,
+            ending     = self.ending,
+        )
 
     @property
     def turn(self) -> Color:
         return "white" if self.board.turn == chess.WHITE else "black"
 
     @property
-    def outcome(self) -> dict[str, str] | None:
+    def outcome(self) -> Outcome | None:
         if self.ending:
             return self.ending
 
         outcome = self.board.outcome()
         if outcome:
-            return {"result": outcome.result(), "reason": outcome.termination.name.lower()}
+            return Outcome.model_validate({
+                "result": outcome.result(),
+                "reason": outcome.termination.name.lower(),
+            })
 
         return None
 
@@ -67,12 +100,12 @@ class Game:
 
         elif action == "resign":
             result = "0-1" if color == "white" else "1-0"
-            self.ending = {"result": result, "reason": "resignation"}
+            self.ending = Outcome(result = result, reason = "resignation")
 
         elif action == "claim_draw":
             if color != self.turn or not self.board.can_claim_draw():
                 raise InvalidAction("You cannot claim a draw right now.")
-            self.ending = {"result": "1/2-1/2", "reason": "draw_claim"}
+            self.ending = Outcome(result = "1/2-1/2", reason = "draw_claim")
 
         elif action == "offer_draw":
             if self.draw_offer:
@@ -83,7 +116,7 @@ class Game:
             if not self.draw_offer or self.draw_offer == color:
                 raise InvalidAction("There is no draw offer from your opponent.")
             if action == "accept_draw":
-                self.ending = {"result": "1/2-1/2", "reason": "agreement"}
+                self.ending = Outcome(result = "1/2-1/2", reason = "agreement")
             self.draw_offer = None
 
         else:
@@ -95,10 +128,10 @@ class Game:
 
     def abandon(self, loser: Color | None) -> None:
         if loser is None:
-            self.ending = {"result": "*", "reason": "aborted"}
+            self.ending = Outcome(result = "*", reason = "aborted")
         else:
             result = "0-1" if loser == "white" else "1-0"
-            self.ending = {"result": result, "reason": "abandonment"}
+            self.ending = Outcome(result = result, reason = "abandonment")
 
         self.draw_offer = None
         self.revision += 1
@@ -123,7 +156,7 @@ class Game:
         if self.draw_offer != color:
             self.draw_offer = None  # Making a move declines the opponent's draw offer.
 
-    def snapshot(self) -> dict:
+    def snapshot(self) -> BoardSnapshot:
         last_move = self.board.peek().uci() if self.board.move_stack else None
 
         king_square  = self.board.king(self.board.turn)
@@ -139,17 +172,17 @@ class Game:
             legal_moves    = [move.uci() for move in self.board.legal_moves]
             can_claim_draw = self.board.can_claim_draw()
 
-        return {
-            "revision"    : self.revision,
-            "fen"         : self.board.fen(),
-            "turn"        : self.turn,
-            "legal_moves" : legal_moves,
+        return BoardSnapshot(
+            revision    = self.revision,
+            fen         = self.board.fen(),
+            turn        = self.turn,
+            legal_moves = legal_moves,
 
-            "moves"     : self.moves.copy(),
-            "last_move" : last_move,
-            "check"     : checked_king,
+            moves     = self.moves.copy(),
+            last_move = last_move,
+            check     = checked_king,
 
-            "outcome"        : outcome,
-            "draw_offer"     : self.draw_offer,
-            "can_claim_draw" : can_claim_draw,
-        }
+            outcome        = outcome,
+            draw_offer     = self.draw_offer,
+            can_claim_draw = can_claim_draw,
+        )

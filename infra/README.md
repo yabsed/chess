@@ -99,8 +99,11 @@ live in foundation; the container count is `DesiredCount` in backend.
 
 The database keeps encryption, backups, deletion protection and retention.
 [stack-policy.json](foundation/stack-policy.json) blocks its replacement and removal
-during foundation updates. SQL schema changes need their own migration before
-deploying code that requires them.
+during foundation updates.
+
+Backend tables are declared in [models.py](../apps/backend/app/models.py).
+Startup creates missing tables; it does not alter existing columns.
+SQL schema changes need their own migration before deploying code that requires them.
 
 CloudFormation handles failed stack updates; ECS rolls back failed container
 rollouts. A failed public endpoint check fails the workflow for investigation.

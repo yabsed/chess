@@ -3,6 +3,7 @@
 import hashlib
 import secrets
 
+from datetime  import timedelta
 from io        import BytesIO
 from threading import BoundedSemaphore
 
@@ -12,8 +13,14 @@ from psycopg.errors        import UniqueViolation
 from pwdlib                import PasswordHash
 from starlette.concurrency import run_in_threadpool
 
+from sqlalchemy                    import delete, func, select
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc                import IntegrityError
+from sqlalchemy.orm                import Session as DatabaseSession, undefer
+
 from . import room
-from .db       import lobby_transaction, pool
+from .db       import lobby_transaction, sessions
+from .models   import LoginAttempt, LoginSession, Player, Room, User as Account
 from .protocol import Credentials, Session, User
 
 
@@ -36,19 +43,18 @@ def request_key(request: Request) -> str:
 
 
 def find_user(key: str) -> User | None:
-    with pool.connection() as db:
-        row = db.execute(t"""
-            SELECT users.id, users.username, users.avatar_version
-            FROM sessions
-            JOIN users ON users.id = sessions.user_id
-            WHERE sessions.token_hash = {key}
-              AND sessions.expires_at > now()
-        """).fetchone()
-
-    if row is None:
-        return None
-
-    return User.profile(row["id"], row["username"], row["avatar_version"])
+    with sessions() as db:
+        user = db.scalar(
+            select(Account)
+            .join(LoginSession, LoginSession.user_id == Account.id)
+            .where(
+                LoginSession.token_hash == key,
+                LoginSession.expires_at > func.now(),
+            )
+        )
+        if user is None:
+            return None
+        return User.profile(user.id, user.username, user.avatar_version)
 
 
 async def current_user(request: Request) -> User:
@@ -64,33 +70,34 @@ def login_attempt(request: Request, response: Response) -> None:
     response.headers["Cache-Control"] = "no-store"
 
     # Commit the attempt even when password verification later fails.
-    with pool.connection() as db:
-        db.execute("DELETE FROM attempts WHERE expires_at <= now()")
+    with sessions.begin() as db:
+        db.execute(delete(LoginAttempt).where(LoginAttempt.expires_at <= func.now()))
 
-        row = db.execute(t"""
-            INSERT INTO attempts (address, count, expires_at)
-            VALUES ({address}, 1, now() + interval '1 minute')
-            ON CONFLICT (address) DO UPDATE
-            SET count = attempts.count + 1
-            RETURNING count
-        """).fetchone()
+        statement = (
+            insert(LoginAttempt)
+            .values(
+                address    = address,
+                count      = 1,
+                expires_at = func.now() + timedelta(minutes = 1),
+            )
+            .on_conflict_do_update(
+                index_elements = [LoginAttempt.address],
+                set_ = {"count": LoginAttempt.count + 1},
+            )
+            .returning(LoginAttempt.count)
+        )
+        count = db.execute(statement).scalar_one()
 
-    assert row is not None
-    if row["count"] > 10:
+    if count > 10:
         raise HTTPException(429, "Too many attempts. Try again in a minute.")
 
 
-def new_session(db, row: dict) -> Session:
+def new_session(db: DatabaseSession, user: User) -> Session:
     token = secrets.token_urlsafe(32)
     key   = session_key(token)
-    user  = User.profile(row["id"], row["username"], row["avatar_version"])
 
-    db.execute("DELETE FROM sessions WHERE expires_at <= now()")
-
-    db.execute(t"""
-        INSERT INTO sessions (token_hash, user_id)
-        VALUES ({key}, {user.id})
-    """)
+    db.execute(delete(LoginSession).where(LoginSession.expires_at <= func.now()))
+    db.add(LoginSession(token_hash = key, user_id = user.id))
 
     return Session(user = user, token = token)
 
@@ -103,40 +110,41 @@ def register(credentials: Credentials) -> Session:
     with password_slots:
         hashed = password.hash(credentials.password)
 
-    with pool.connection() as db:
-        try:
-            row = db.execute(t"""
-                INSERT INTO users (username, password_hash)
-                VALUES ({username}, {hashed})
-                RETURNING id, username, avatar_version
-            """).fetchone()
+    try:
+        with sessions.begin() as db:
+            user = Account(username = username, password_hash = hashed)
+            db.add(user)
+            db.flush()
 
-        except UniqueViolation:
-            raise HTTPException(409, "That username is already taken.") from None
+            profile = User.profile(user.id, user.username, user.avatar_version)
+            return new_session(db, profile)
 
-        assert row is not None
-        return new_session(db, row)
+    except IntegrityError as error:
+        if not isinstance(error.orig, UniqueViolation):
+            raise
+        raise HTTPException(409, "That username is already taken.") from None
 
 
 @router.post("/session", dependencies = [Depends(login_attempt)])
 def login(credentials: Credentials) -> Session:
     username = credentials.username.lower()
 
-    with pool.connection() as db:
-        row = db.execute(t"""
-            SELECT id, username, password_hash, avatar_version
-            FROM users
-            WHERE username = {username}
-        """).fetchone()
+    with sessions() as db:
+        user = db.scalar(
+            select(Account)
+            .where(Account.username == username)
+            .options(undefer(Account.password_hash))
+        )
+        hashed  = user.password_hash if user else dummy_hash
+        profile = User.profile(user.id, user.username, user.avatar_version) if user else None
 
-    hashed = row["password_hash"] if row else dummy_hash
     with password_slots:
         valid = password.verify(credentials.password, hashed)
-    if not valid or row is None:
+    if not valid or profile is None:
         raise HTTPException(401, "Incorrect username or password.")
 
-    with pool.connection() as db:
-        return new_session(db, row)
+    with sessions.begin() as db:
+        return new_session(db, profile)
 
 
 @router.get("/me")
@@ -151,22 +159,20 @@ def logout(request: Request):
 
     with lobby_transaction() as db:
         # Finish any in-flight action in this game before revoking its session.
-        db.execute(t"""
-            SELECT room.id
-            FROM rooms AS room
-            JOIN players AS player ON player.room_id = room.id
-            WHERE player.token_hash = {key}
-            FOR UPDATE OF room
-        """)
+        db.execute(
+            select(Room.id)
+            .join(Player, Player.room_id == Room.id)
+            .where(Player.token_hash == key)
+            .with_for_update(of = Room)
+        ).all()
 
-        session = db.execute(t"""
-            DELETE FROM sessions
-            WHERE token_hash = {key}
-            RETURNING user_id
-        """).fetchone()
-
-        if session:
-            room.notify(db, session["user_id"])
+        user_id = db.scalar(
+            delete(LoginSession)
+            .where(LoginSession.token_hash == key)
+            .returning(LoginSession.user_id)
+        )
+        if user_id is not None:
+            room.notify(db, user_id)
 
 
 def save_avatar(user_id: int, data: bytes) -> User:
@@ -187,19 +193,13 @@ def save_avatar(user_id: int, data: bytes) -> User:
     data    = output.getvalue()
     version = hashlib.sha256(data).hexdigest()[:16]
 
-    with pool.connection() as db:
-        row = db.execute(t"""
-            UPDATE users
-            SET avatar         = {data},
-                avatar_version = {version}
-            WHERE id = {user_id}
-            RETURNING id, username, avatar_version
-        """).fetchone()
-
-        assert row is not None
+    with sessions.begin() as db:
+        user = db.get(Account, user_id)
+        assert user is not None
+        user.avatar         = data
+        user.avatar_version = version
         room.notify(db, user_id)
-
-    return User.profile(row["id"], row["username"], row["avatar_version"])
+        return User.profile(user.id, user.username, user.avatar_version)
 
 
 @router.put("/me/avatar")
@@ -215,17 +215,13 @@ async def upload_avatar(request: Request) -> User:
 
 @router.get("/users/{user_id}/avatar")
 def avatar(user_id: int) -> Response:
-    with pool.connection() as db:
-        row = db.execute(t"""
-            SELECT avatar
-            FROM users
-            WHERE id = {user_id}
-        """).fetchone()
+    with sessions() as db:
+        data = db.scalar(select(Account.avatar).where(Account.id == user_id))
 
-    if row is None or row["avatar"] is None:
+    if data is None:
         raise HTTPException(404, "No profile picture.")
 
     return Response(
-        row["avatar"], media_type = "image/webp",
+        data, media_type = "image/webp",
         headers = {"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"},
     )

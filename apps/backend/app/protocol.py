@@ -1,10 +1,10 @@
-"""HTTP responses and Socket.IO inputs at the application boundary."""
+"""HTTP and Socket.IO messages at the application boundary."""
 
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .game import Action
+from .game import Action, BoardSnapshot, Color
 
 
 RoomId = Annotated[str, Field(pattern = r"^[a-f0-9]{12}$")]
@@ -55,3 +55,19 @@ class Command(BaseModel):
     type     : Action
     revision : int = Field(ge = 0)
     move     : str = Field(default = "", max_length = 5)
+
+
+class Seat(BaseModel):
+    id    : str
+    color : Color
+
+
+class GameSnapshot(BoardSnapshot):
+    players   : dict[Color, User]
+    connected : list[Color]
+
+
+class RoomSnapshot(BaseModel):
+    seat    : Seat | None
+    waiting : bool
+    game    : GameSnapshot | None
