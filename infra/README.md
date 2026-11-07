@@ -1,185 +1,126 @@
-# Infrastructure
+# Deployment
 
-`foundation.yaml` owns the network, private ALB, CloudFront, ECS compute, ECR,
-RDS, secrets, logs, and deployment policies. `backend.yaml` owns the ECS service
-and task definition. Application deployments update only the backend stack.
-`deployment-access.yaml` separately owns the infrastructure caller policy and
-CloudFormation execution role; the infrastructure workflow cannot update that stack.
+Three workflows have three jobs: Frontend publishes Pages, Backend releases the
+application, and Infrastructure plans or applies foundation changes.
 
-The production account, region, and stack names live in `production.env`.
-This file contains only non-secret deployment settings and is committed to Git;
-the local-secret `.env` ignore rule does not match `production.env`. Each AWS job
-loads it into `GITHUB_ENV` before authentication, so the following action receives
-`env.AWS_REGION`. No separate GitHub variable named `AWS_REGION` is required.
-The foundation keeps the existing console-created stack name and its five
-original logical IDs. Renaming those resources is a migration, not formatting.
+| File | Responsibility |
+| --- | --- |
+| `production.env` | Public account, region and stack names |
+| `foundation.yaml` | Network, traffic, database, compute and backend deployment permissions |
+| `backend.yaml` | ECS task definition and service |
+| `deployment-access.yaml` | Infrastructure caller policy and CloudFormation execution role |
+| `foundation.sh` | Create a plan or apply the exact reviewed plan |
+| `backend.sh` | Deploy an image digest and restore the previous release if verification fails |
+| `verify.sh` / `smoke.sh` | Check ECS state, running image, HTTP and WebSockets |
+| `check.py` / `safety.guard` | Check template safety and compare the applied foundation |
 
-## Deploy the backend
+These templates manage the existing production resources. Keep their logical IDs.
+They are not an empty-account installer: the database, its credentials and the
+API-only deployment users were prepared before adoption.
 
-Merging backend changes into `main` builds an image, runs it with PostgreSQL,
-checks HTTP and WebSockets, pushes the checked image, and deploys its ECR digest
-through CloudFormation. The workflow verifies the running task definition and
-image digest, then checks the public endpoint. A failed ECS rollout uses the
-deployment circuit breaker. Failed post-deployment checks redeploy the previous
-template and parameters; the workflow remains failed so the bad release is visible.
+## Settings and keys
 
-GitHub Secrets `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` belong to the
-existing `chess-github-deploy` IAM user. Its policy is defined in the foundation.
-It can push this image and deploy the backend stack, but cannot change the
-foundation, read the database secret, or update ECS directly.
+`production.env` is tracked in Git and contains no secrets. The `.env` ignore rule
+does not match it. Both AWS workflows load it into `GITHUB_ENV` before authentication,
+so `aws-region: ${{ env.AWS_REGION }}` receives its value from that file.
 
-Keep the repository variable `AWS_DEPLOY_ENABLED=true` to enable deployment.
-Setting it to `false` keeps validation and image checks running without deploying.
-The frontend's Pages workflow still uses `VITE_BACKEND_URL`.
+| GitHub repository setting | Value |
+| --- | --- |
+| Secret `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Existing `chess-github-deploy` key pair |
+| Secret `AWS_INFRA_ACCESS_KEY_ID` / `AWS_INFRA_SECRET_ACCESS_KEY` | Separate `chess-github-infra` key pair |
+| Variable `AWS_DEPLOY_ENABLED` | `true` enables backend deployment |
+| Variable `VITE_BACKEND_URL` | Public HTTPS API origin used by the frontend |
 
-To deploy an existing digest from a trusted local session:
+AWS authentication uses access keys. Each ID and secret must come from the same
+issuance. PR checks need no AWS keys. Infrastructure always needs its own pair;
+`AWS_DEPLOY_ENABLED` controls only Backend. The reusable Backend workflow receives
+only the backend pair. Existing SSH secrets are unused.
+
+The database URL stays in Secrets Manager. ECS injects it at task startup; changing
+its value requires a coordinated application redeployment. It never belongs in
+GitHub variables, template outputs, logs or artifacts.
+
+## Backend
+
+Merging to `main` builds and tests the container with PostgreSQL, checks HTTP and
+WebSockets, and publishes the checked image to ECR. CloudFormation deploys its
+immutable digest. Verification checks the actual ECS task, image digest and public
+endpoint. ECS handles failed rollouts; failed post-deployment checks restore the
+previous template and all its parameters. The run still fails to flag the bad release.
+
+Backend stops if the checked-in foundation differs from the applied template.
+Comments, layout, root documentation and the obsolete revision marker are ignored;
+resource settings and resource metadata are compared. Foundation and backend writes
+share one concurrency group.
+
+To deploy a known digest from an authenticated operator session at the repository root:
 
 ```sh
-set -a
-. infra/production.env
-set +a
-bash infra/deploy.sh '<repository-uri>@sha256:<digest>'
+bash infra/backend.sh '<repository-uri>@sha256:<digest>'
 ```
 
-Re-running Backend builds a new candidate. To roll back code, revert the commit
-and let CD deploy it. To restore a previous release without rebuilding, check out
-that release's `backend.yaml` and use its recorded digest with `deploy.sh`.
-Keep the current foundation file: an app rollback must not undo the infrastructure.
+Revert an application commit to release an older version through CI. To restore an
+existing image without rebuilding, use its digest and matching `backend.yaml` with
+`backend.sh`. Keep the current foundation. Container rollback does not undo database
+writes; schema migrations must remain compatible with the previous application.
 
-## Change the foundation
+## Foundation
 
 1. Review and merge the template change.
 2. Run **Infrastructure → plan** on `main`.
-3. Read the change list and validation artifact. Check replacements in particular.
-4. Run **Infrastructure → apply**, supplying the exact change set ARN.
+3. Read the run summary and `infrastructure-plan` artifact, including validation events.
+4. Run **Infrastructure → apply** with that exact change set ARN.
 
-IAM requires the configured execution role when planning. Apply verifies the stack,
-commit, template hash, and change set status.
-The workflow accepts only modifications without replacement to existing non-IAM
-resources. New resources, removals, replacements, and IAM changes require a reviewed
-operator change and, where needed, an updated execution-role allowlist. Database
-removal or replacement requires an explicit data migration.
-`stack-policy.json` also prevents CloudFormation from replacing or removing the
-database during execution, including updates started outside this workflow.
-After the foundation completes, the same workflow calls Backend at that commit.
-Foundation and backend writes share a concurrency group. A backend run whose
-foundation hash differs from the applied template stops before changing ECS.
-This handles a commit containing both infrastructure and application changes.
+Apply checks the stack, commit, template hash and change set status. It allows only
+updates to existing non-IAM resources without replacement. Additions, removals,
+replacements and IAM changes need an operator-reviewed migration and any necessary
+execution-role changes. The stack policy also blocks database replacement and removal.
+After apply, Infrastructure calls Backend at the same commit.
 
-An unchanged template produces a successful plan with "Nothing to apply" in the
-run summary. Its empty change set cannot be applied. Other planning errors remain
-failures, with change-set and validation details uploaded when available.
+A failed change set with AWS's no-change reason is a successful no-op plan. Other
+errors fail the run. A successful change set may contain no resource changes when
+only stack-level settings change; review its description before applying it.
 
-## GitHub credentials and bootstrap
+## Deployment access
 
-The four repository secrets are two different key pairs:
+`chess-deployment-access` owns `deployment-access.yaml`. Its resource allowlist is
+written beside each service's actions. The foundation workflow cannot update this
+bootstrap stack or rewrite IAM policies and role trust. Its caller can plan and
+apply the foundation and pass only `chess-foundation-cloudformation` to CloudFormation.
+The execution role can update the listed resources and launch the ASG's instances
+using a numbered version of its pinned launch template. It can read the database
+secret for CloudFormation's resource handler; the caller cannot read it directly.
 
-| Secret | IAM user | Purpose |
-| --- | --- | --- |
-| `AWS_ACCESS_KEY_ID` | `chess-github-deploy` | Backend ECR push and deployment |
-| `AWS_SECRET_ACCESS_KEY` | `chess-github-deploy` | Secret half of that same key pair |
-| `AWS_INFRA_ACCESS_KEY_ID` | `chess-github-infra` | Foundation change sets |
-| `AWS_INFRA_SECRET_ACCESS_KEY` | `chess-github-infra` | Secret half of that same key pair |
+An operator creates the API-only infrastructure user once, deploys this bootstrap,
+and issues its key outside CloudFormation. Send both values directly to `gh secret
+set` through standard input or use GitHub's secret editor. Never print keys or put
+them in arguments or files. To rotate, register a second pair, verify Infrastructure
+`plan`, then deactivate and delete the old pair. Keep the backend key separate.
 
-OIDC is not used. The infrastructure user is API-only and has no console password.
-It can create and execute change sets for the production foundation and pass only
-`chess-foundation-cloudformation` to CloudFormation. It has no direct EC2, RDS, IAM
-administration, or Secrets Manager access. The execution role has read and update
-permissions scoped to existing foundation resources, plus the EC2 launch permissions
-needed to update its ASG. IAM policy and trust changes are deliberately excluded:
-rewriting a passable role would otherwise let the workflow escalate its privileges.
-The ASG must use a numbered launch-template version.
+These credentials can change production infrastructure. Explicit secret forwarding
+prevents accidental inheritance; it does not isolate repository secrets from other
+trusted workflow code. Restrict repository write access accordingly.
 
-These are still production credentials: foundation updates can change networking,
-compute, and database settings. Keep write access to this repository restricted.
-Explicit reusable-workflow secret arguments prevent accidentally inheriting extra
-credentials; they do not isolate repository secrets from other trusted workflow code.
-The execution role can read the database URL when CloudFormation reads the secret
-resource. Its value must never appear in workflow output, parameters, or artifacts.
+## Data and capacity
 
-The bootstrap is `chess-deployment-access` in the production account and region.
-`deployment-access.parameters.json` records the reviewed existing-resource ARN
-allowlist; these are resource identifiers, not credential values. Adding a resource
-or changing IAM requires a trusted operator to review both the foundation change
-and the bootstrap permissions. Never broaden these to administrator access merely
-to make a deployment pass.
+Production currently has one application task, a Single-AZ database and one NAT
+gateway. More replicas need enough ASG capacity for a rolling deployment. ECS owns
+desired host capacity; the template owns its bounds, launch template and AMI. Host
+updates use instance refresh and managed draining. Verify application health afterward.
 
-The API-only user is created directly with IAM before deploying the bootstrap:
-this account blocks the login-profile probes used by CloudFormation's IAM user
-resource. Its policy is managed by the bootstrap template. Access keys stay outside
-CloudFormation entirely. Create a key for `chess-github-infra` and send its two values
-directly to the matching GitHub Secrets using `gh secret set` through standard input
-or GitHub's secret editor. Do not commit them, print them, or put them in shell arguments.
-Both values must come from the same key; the backend user's existing key is unrelated.
+RDS is private, encrypted and deletion-protected. The database, URL secret, ECR
+repository and logs are retained on stack deletion or replacement. Retention is not
+a migration: restoring a backup creates another database whose contents must be
+checked before traffic moves. Backup retention is one day because this account's
+free plan rejected seven days. No long-term CloudTrail trail was added during adoption.
 
-For rotation, create a second key on the same user, replace both infrastructure
-secrets, and run **Infrastructure → plan** on `main`. After it succeeds, deactivate
-and delete the previous key. GitHub cannot reveal a saved secret's original value.
-`SSH_PRIVATE_KEY` and `SSH_KNOWN_HOSTS` are not used by these AWS workflows.
-
-No GUI-only step is required. An operator can also create, review, and execute a
-CloudFormation change set using an authenticated local AWS session.
-
-## Capacity and data
-
-The initial adoption preserves one backend task, a Single-AZ database, and one
-NAT gateway. It is not an end-to-end multi-AZ service. Two EC2 instances alone do
-not give the application two replicas. Before increasing task count or requiring
-one task per host, increase the ASG's maximum enough to fit a rolling deployment.
-
-ECS managed scaling owns the ASG's desired capacity. The template owns its bounds,
-launch template, and AMI. AMI changes are explicit; `AutoScalingInstanceRefresh`
-replaces hosts and ECS managed draining moves their tasks. The warmup period must
-cover ECS registration. A successful EC2 health check alone does not prove the
-application is ready; verify service health after a host update.
-
-RDS is encrypted and private, with one day of automated backups and deletion
-protection. AWS rejected seven-day retention under this account's free plan;
-increase it after that account restriction is removed. The database, secret,
-image repository, and logs are retained on stack
-deletion/replacement. Retention is not a migration: a new empty database must never
-silently replace the current endpoint. Restoring a backup creates another database;
-check its contents before changing application credentials or traffic.
-
-The current secret contains the complete PostgreSQL URL. Only its identity is
-managed by the template; its value is never an output or a GitHub secret. The ECS
-execution role injects it at task startup. Updating a secret does not update running
-containers; rotate credentials with a coordinated application redeployment.
-
-Application startup establishes the initial schema. Later schema migrations must
-remain compatible with the previous app release. Container rollback does not roll
-back database writes or schema changes.
-
-## Adoption and new environments
-
-The first import adds existing resources without changing their settings. It is
-followed by a separate update that connects references, adds exports and the
-backend deployment role, and applies the reviewed protection settings. Task
-definition and service are imported into the backend stack before its first release.
-Run drift detection after import; inspect unsupported resource types directly.
-Default VPC resources, AWS service-linked roles, and the CloudFront-managed security
-group remain service-managed. The API-only IAM user's policy is managed here; its
-identity and access keys are the authentication bootstrap boundary.
-
-This first version adopts the existing database and URL secret. It does not yet
-bootstrap database credentials in an empty account: RDS master credentials, an
-application database user, and the URL secret must be prepared before importing
-that database. Do not run a blind CREATE against these production templates.
-A clean-account bootstrap needs the planned separate credential inputs and a
-one-off database setup task; the normal backend release path is already shared.
-
-No CloudTrail trail was configured in the inspected account during adoption.
-CloudFormation events and CloudTrail event history are available, but this change
-does not add long-term audit-log storage.
-
-## Validate locally
+## Local validation
 
 ```sh
 python3 -m venv /tmp/chess-infra
-/tmp/chess-infra/bin/pip install cfn-lint==1.60.0 guardpycfn==0.1.0
+/tmp/chess-infra/bin/pip install -r infra/requirements.txt
 PATH="/tmp/chess-infra/bin:$PATH" make infra-check
 ```
 
-The guard rules check private encrypted databases, retention, secret handling,
-read-only containers, rolling-deployment protection, and key/IAM boundaries. They complement the
-CloudFormation schema check and AWS change-set validation.
+Schema and Guard checks cover database protection, secret handling, container
+restrictions and deployment permissions. AWS plan validation checks the live account.

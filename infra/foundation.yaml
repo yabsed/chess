@@ -8,11 +8,6 @@ Metadata:
     ref: [infra/README.md]
 
 Parameters:
-  TemplateRevision:
-    Type: String
-    AllowedPattern: '[a-f0-9]{64}'
-    Description: SHA-256 of this file, supplied by the infrastructure workflow.
-
   ECSClusterName:
     Type: String
     Default: chess
@@ -25,6 +20,8 @@ Parameters:
     Description: Existing API-only IAM user; its access key stays in GitHub Secrets.
 
 Resources:
+  # Network
+
   VPC:
     Type: AWS::EC2::VPC
     DeletionPolicy: Retain
@@ -230,6 +227,8 @@ Resources:
         - Key: Name
           Value: !Sub '${ECSClusterName}-vpce-s3'
 
+  # Traffic: CloudFront -> private ALB -> backend
+
   # Only CloudFront may reach the private ALB. The prefix list is regional.
   LoadBalancerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -362,6 +361,8 @@ Resources:
         - Key: Name
           Value: !Sub '${ECSClusterName}-backend'
 
+  # Database
+
   DatabaseSubnets:
     Type: AWS::RDS::DBSubnetGroup
     DeletionPolicy: Retain
@@ -411,6 +412,8 @@ Resources:
     Properties:
       Name: !Sub '${ECSClusterName}/database-url'
 
+  # Images and logs
+
   Repository:
     Type: AWS::ECR::Repository
     DeletionPolicy: Retain
@@ -428,6 +431,8 @@ Resources:
     Properties:
       LogGroupName: !Sub '/ecs/${ECSClusterName}'
       RetentionInDays: 7
+
+  # Compute
 
   InstanceRole:
     Type: AWS::IAM::Role
@@ -564,6 +569,8 @@ Resources:
           Weight: 1
           CapacityProvider: !Ref AsgCapacityProvider
 
+  # Backend deployment permissions
+
   # This role can deploy only the application stack's resources, not the foundation.
   BackendDeploymentRole:
     Type: AWS::IAM::Role
@@ -680,9 +687,6 @@ Resources:
             Resource: !Sub 'arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:task/${ECSClusterName}/*'
 
 Outputs:
-  TemplateRevision:
-    Value: !Ref TemplateRevision
-
   ECSCluster:
     Value: !Ref ECSCluster
     Export:

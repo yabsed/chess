@@ -36,6 +36,7 @@ Resources:
       Memory: '1024'
       ExecutionRoleArn:
         Fn::ImportValue: !Sub '${FoundationStack}-ExecutionRole'
+
       ContainerDefinitions:
         - Name: backend
           Image: !Ref ImageUri
@@ -49,16 +50,19 @@ Resources:
             - ContainerPort: 8000
               HostPort: 8000
               Protocol: tcp
+
           Environment:
             - Name: CHESS_ORIGIN
               Value: !Ref FrontendOrigin
             - Name: FORWARDED_ALLOW_IPS
               Value:
                 Fn::ImportValue: !Sub '${FoundationStack}-ProxyCidrs'
+
           Secrets:
             - Name: CHESS_DATABASE_URL
               ValueFrom:
                 Fn::ImportValue: !Sub '${FoundationStack}-DatabaseUrl'
+
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -66,6 +70,7 @@ Resources:
                 Fn::ImportValue: !Sub '${FoundationStack}-LogGroup'
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: backend
+
           HealthCheck:
             Command:
               - CMD
@@ -93,11 +98,13 @@ Resources:
         Fn::ImportValue: !Sub '${FoundationStack}-Cluster'
       TaskDefinition: !Ref TaskDefinition
       DesiredCount: 1
+
       CapacityProviderStrategy:
         - CapacityProvider:
             Fn::ImportValue: !Sub '${FoundationStack}-CapacityProvider'
           Weight: 1
           Base: 0
+
       DeploymentController:
         Type: ECS
       DeploymentConfiguration:
@@ -115,6 +122,7 @@ Resources:
           Field: attribute:ecs.availability-zone
         - Type: binpack
           Field: MEMORY
+
       NetworkConfiguration:
         AwsvpcConfiguration:
           AssignPublicIp: DISABLED
@@ -124,6 +132,7 @@ Resources:
               - Fn::ImportValue: !Sub '${FoundationStack}-PrivateSubnets'
           SecurityGroups:
             - Fn::ImportValue: !Sub '${FoundationStack}-BackendSecurityGroup'
+
       LoadBalancers:
         - ContainerName: backend
           ContainerPort: 8000
