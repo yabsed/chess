@@ -86,7 +86,7 @@ class ReleaseTests(unittest.TestCase):
 
         self.create_session = patch.object(release.boto3, "Session", return_value=self.session).start()
         self.verify = patch.object(release, "verify_service").start()
-        self.run = patch.object(release.subprocess, "run", side_effect=self.run_command).start()
+        self.mock_run = patch.object(release.subprocess, "run", side_effect=self.run_command).start()
         patch.object(release.subprocess, "check_output", return_value="commit\n").start()
 
     def describe_stack(self, *, StackName):
@@ -208,7 +208,7 @@ class ReleaseTests(unittest.TestCase):
                     raise subprocess.CalledProcessError(22, command)
             return original_run(command, **options)
 
-        self.run.side_effect = fail_first_smoke
+        self.mock_run.side_effect = fail_first_smoke
 
         self.assertEqual(self.main("--digest", NEW_IMAGE), 1)
         self.assert_restored()
@@ -249,7 +249,7 @@ class ReleaseTests(unittest.TestCase):
                 raise subprocess.CalledProcessError(1, command)
             return result
 
-        self.run.side_effect = fail_restore
+        self.mock_run.side_effect = fail_restore
 
         self.assertEqual(self.main("--digest", NEW_IMAGE), 1)
         self.assertEqual(len(self.deployments), 2)
@@ -331,14 +331,14 @@ class ReleaseTests(unittest.TestCase):
         self.cloudformation.get_template.return_value = {"TemplateBody": {"Resources": {}}}
 
         self.assertEqual(self.main("local-image"), 1)
-        self.run.assert_not_called()
+        self.mock_run.assert_not_called()
         self.ecr.get_authorization_token.assert_not_called()
 
     def test_wrong_target_stops_before_publishing(self):
         os.environ["BACKEND_STACK"] = "other-backend"
 
         self.assertEqual(self.main("local-image"), 1)
-        self.run.assert_not_called()
+        self.mock_run.assert_not_called()
         self.ecr.get_authorization_token.assert_not_called()
 
     def test_wrong_account_stops_before_reading_or_publishing(self):
@@ -346,7 +346,7 @@ class ReleaseTests(unittest.TestCase):
 
         self.assertEqual(self.main("local-image"), 1)
         self.cloudformation.describe_stacks.assert_not_called()
-        self.run.assert_not_called()
+        self.mock_run.assert_not_called()
 
     def test_missing_github_key_stops_before_creating_a_session(self):
         del os.environ["AWS_SECRET_ACCESS_KEY"]
@@ -364,7 +364,7 @@ class ReleaseTests(unittest.TestCase):
     def test_publish_uses_password_stdin_and_cleans_docker_credentials(self):
         self.assertEqual(self.main("local-image"), 0)
 
-        docker_calls = [entry for entry in self.run.call_args_list if entry.args[0][0] == "docker"]
+        docker_calls = [entry for entry in self.mock_run.call_args_list if entry.args[0][0] == "docker"]
         login = docker_calls[0]
         self.assertEqual(login.args[0], [
             "docker", "login", "--username", "AWS", "--password-stdin", REPOSITORY.split("/")[0],

@@ -2,15 +2,19 @@
 
 from copy import deepcopy
 from pathlib import Path
+from typing import Any
 
 from cfnlint.decode import decode_str
 
 
-def comparable_template(body):
+def comparable_template(body) -> dict[str, Any]:
     if isinstance(body, str):
         body, errors = decode_str(body)
         if errors:
             raise ValueError(errors)
+
+    if not isinstance(body, dict):
+        raise ValueError("Template must be a mapping.")
 
     body = deepcopy(body)
 
