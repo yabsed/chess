@@ -47,8 +47,9 @@ needs no execution. Preserve exact resource scopes, including the launch templat
 security group and private subnets; do not replace them with wildcards.
 
 The helper rejects incomplete deployments and detects stack changes during its
-reads. The resulting JSON is a snapshot, not a lock: regenerate it if foundation
-changes before you create or apply the access change set.
+reads. The resulting JSON is a snapshot, not a lock. If foundation changes before
+execution, regenerate the JSON and recreate and review the access change set;
+an existing change set keeps the parameter values it was created with.
 
 ## Issue or rotate keys
 
