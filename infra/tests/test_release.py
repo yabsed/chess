@@ -163,11 +163,17 @@ class ReleaseTests(unittest.TestCase):
             call(self.ecs, "chess", "backend-service", "new-task", NEW_IMAGE),
             call(self.ecs, "chess", "backend-service", "previous-task", PREVIOUS_IMAGE),
         ])
+        for deployment in self.deployments:
+            command = deployment["command"]
+            template = Path(command[command.index("--template-file") + 1])
+            self.assertFalse(template.exists())
 
     def test_successful_release_verifies_expected_image(self):
         self.assertEqual(self.main("--digest", NEW_IMAGE), 0)
 
         self.assertEqual(len(self.deployments), 1)
+        backend_template = Path(release.__file__).with_name("template.yaml").read_text()
+        self.assertEqual(self.deployments[0]["template"], backend_template)
         self.assertEqual(self.deployments[0]["parameters"], [
             "FoundationStack=chess-foundation", f"ImageUri={NEW_IMAGE}",
         ])
@@ -229,6 +235,49 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(self.main("--digest", NEW_IMAGE), 1)
         self.assertEqual(len(self.deployments), 1)
         self.verify.assert_not_called()
+        command = self.deployments[0]["command"]
+        template = Path(command[command.index("--template-file") + 1])
+        self.assertFalse(template.exists())
+
+    def test_failed_restoration_stops_without_reporting_success(self):
+        self.verify.side_effect = VerificationError("Wrong running digest")
+        original_run = self.run_command
+
+        def fail_restore(command, **options):
+            result = original_run(command, **options)
+            if command[:3] == ["aws", "cloudformation", "deploy"] and len(self.deployments) == 2:
+                raise subprocess.CalledProcessError(1, command)
+            return result
+
+        self.run.side_effect = fail_restore
+
+        self.assertEqual(self.main("--digest", NEW_IMAGE), 1)
+        self.assertEqual(len(self.deployments), 2)
+        self.verify.assert_called_once()
+        self.assertNotIn("restored and verified", self.stderr.getvalue())
+
+    def test_unhealthy_restoration_still_fails_without_another_restore(self):
+        self.verify.side_effect = [
+            VerificationError("New release is unhealthy"),
+            VerificationError("Previous release is unhealthy"),
+        ]
+
+        self.assertEqual(self.main("--digest", NEW_IMAGE), 1)
+        self.assert_restored()
+        self.assertIn("Previous release is unhealthy", self.stderr.getvalue())
+        self.assertNotIn("restored and verified", self.stderr.getvalue())
+
+    def test_successful_restoration_preserves_the_original_failure(self):
+        failure = VerificationError("Original verification failure")
+        self.verify.side_effect = [failure, None]
+
+        with self.assertRaises(VerificationError) as caught:
+            release.release(
+                self.session, "chess-foundation", "chess-backend", None, NEW_IMAGE,
+            )
+
+        self.assertIs(caught.exception, failure)
+        self.assert_restored()
 
     def test_output_lookup_failure_does_not_enter_restore_path(self):
         self.deployed_read_error = ClientError({"Error": {

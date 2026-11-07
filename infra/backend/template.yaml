@@ -77,7 +77,9 @@ Resources:
               - CMD
               - .venv/bin/python
               - -c
-              - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"
+              - >-
+                import urllib.request;
+                urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)
             Interval: 15
             Timeout: 5
             Retries: 3

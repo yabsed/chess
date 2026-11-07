@@ -74,7 +74,9 @@ as resource changes. Resource settings and resource metadata do.
 ECS handles failed rollouts. If post-deployment checks fail, the release script
 restores the previous template and all its parameters, verifies the restoration,
 and still fails the run. A first release has no previous version to restore.
-The previous release stays together as a template and a parameter dictionary.
+New and previous releases use the same `Release` value: template text and all its
+parameters. Both go through the same deployment function. The verification failure
+branch contains the complete restore flow; success reporting follows it.
 CloudFormation deployment failures do not enter this post-deployment restore path.
 
 Revert an application commit to release an older version through CI. Container

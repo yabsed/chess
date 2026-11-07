@@ -20,8 +20,8 @@ from infra.foundation.check_applied import check_applied
 
 
 @dataclass(frozen=True)
-class PreviousRelease:
-    template: str | dict
+class Release:
+    template: str
     parameters: dict[str, str]
 
 
@@ -31,9 +31,9 @@ def release(session, foundation_stack, backend_stack, local_image, image_digest)
     applied = cloudformation.get_template(StackName=foundation_stack)
     check_applied(applied["TemplateBody"])
 
-    role = foundation["BackendDeploymentRole"]
-    cluster = foundation["ECSCluster"]
-    url = foundation["ApiUrl"]
+    role       = foundation["BackendDeploymentRole"]
+    cluster    = foundation["ECSCluster"]
+    api_url    = foundation["ApiUrl"]
     repository = foundation["RepositoryUri"]
 
     if backend_stack != f"{cluster}-backend":
@@ -45,62 +45,66 @@ def release(session, foundation_stack, backend_stack, local_image, image_digest)
         new_image = publish_image(session.client("ecr"), repository, local_image)
 
     check_image(repository, new_image)
+
+    new_release = Release(
+        template=Path(__file__).with_name("template.yaml").read_text(),
+        parameters={
+            "FoundationStack": foundation_stack,
+            "ImageUri":        new_image,
+        },
+    )
     previous_release = read_previous_release(cloudformation, backend_stack)
 
     # A failed CloudFormation deployment uses its own rollback, not our restore path.
     print("Deploying release.", flush=True)
-    deploy(
-        session,
-        backend_stack,
-        role,
-        template=Path(__file__).with_name("template.yaml"),
-        parameters={"FoundationStack": foundation_stack, "ImageUri": new_image},
-    )
+    deploy(session, backend_stack, role, new_release)
     deployed = stack_outputs(cloudformation, backend_stack)
-    new_task = deployed["TaskDefinition"]
-    new_service = deployed["Service"]
     ecs = session.client("ecs")
 
     print("Verifying ECS, HTTP and WebSockets.", flush=True)
     try:
-        verify_service(ecs, cluster, new_service, new_task, new_image)
-        subprocess.run(["bash", "infra/backend/smoke.sh", url], check=True)
-    except (VerificationError, ClientError, BotoCoreError, subprocess.CalledProcessError) as error:
+        verify_release(ecs, cluster, deployed, new_image, api_url)
+
+    except VerificationError as error:
         print(f"Release verification failed: {error}", file=sys.stderr)
-    else:
-        summary = f"Image: {new_image}\n\nTask: {new_task}\n\nAPI: {url}\n"
-        print(summary)
-        if os.environ.get("GITHUB_STEP_SUMMARY"):
-            with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as output:
-                output.write(summary)
-        return 0
 
-    if previous_release is None:
-        raise ValueError("This was the first release; no previous release exists.")
+        if previous_release is None:
+            raise VerificationError(
+                "This was the first release; no previous release exists."
+            ) from error
 
-    print("Restoring the previous template and parameters through CloudFormation.", flush=True)
-    with TemporaryDirectory(prefix="chess-restore-") as work:
-        previous_template = Path(work) / "template.yaml"
-        body = previous_release.template
-        previous_template.write_text(body if isinstance(body, str) else json.dumps(body))
+        print("Restoring the previous template and parameters through CloudFormation.", flush=True)
+        deploy(session, backend_stack, role, previous_release)
+        restored = stack_outputs(cloudformation, backend_stack)
+        previous_image = previous_release.parameters["ImageUri"]
 
-        deploy(
-            session,
-            backend_stack,
-            role,
-            template=previous_template,
-            parameters=previous_release.parameters,
-        )
+        verify_release(ecs, cluster, restored, previous_image, api_url)
+        print("Previous release restored and verified. The release still failed.", file=sys.stderr)
+        raise
 
-    restored = stack_outputs(cloudformation, backend_stack)
-    restored_task = restored["TaskDefinition"]
-    restored_service = restored["Service"]
-    previous_image = previous_release.parameters["ImageUri"]
+    report_success(new_image, deployed["TaskDefinition"], api_url)
+    return 0
 
-    verify_service(ecs, cluster, restored_service, restored_task, previous_image)
-    subprocess.run(["bash", "infra/backend/smoke.sh", url], check=True)
-    print("Previous release restored and verified. The release still failed.", file=sys.stderr)
-    return 1
+
+def verify_release(ecs, cluster, deployed, image, api_url):
+    task    = deployed["TaskDefinition"]
+    service = deployed["Service"]
+
+    try:
+        verify_service(ecs, cluster, service, task, image)
+        subprocess.run(["bash", "infra/backend/smoke.sh", api_url], check=True)
+    except (ClientError, BotoCoreError, subprocess.CalledProcessError) as error:
+        raise VerificationError(str(error)) from error
+
+
+def report_success(image, task, api_url):
+    summary = f"Image: {image}\n\nTask: {task}\n\nAPI: {api_url}\n"
+    print(summary)
+
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_path:
+        with Path(summary_path).open("a") as output:
+            output.write(summary)
 
 
 def stack_outputs(cloudformation, stack_name):
@@ -121,12 +125,16 @@ def read_previous_release(cloudformation, stack_name):
         raise
 
     stack = response["Stacks"][0]
-    template = cloudformation.get_template(StackName=stack_name)["TemplateBody"]
+    response = cloudformation.get_template(StackName=stack_name)
+    template = response["TemplateBody"]
+    if not isinstance(template, str):
+        template = json.dumps(template)
+
     parameters = {
         parameter["ParameterKey"]: parameter["ParameterValue"]
         for parameter in stack["Parameters"]
     }
-    return PreviousRelease(template, parameters)
+    return Release(template, parameters)
 
 
 def check_image(repository, image):
@@ -147,8 +155,11 @@ def publish_image(ecr, repository, local_image):
     tag = f"{commit}-{run}-{attempt}"
     tagged_image = f"{repository}:{tag}"
 
-    authorization = ecr.get_authorization_token()["authorizationData"][0]
-    username, password = base64.b64decode(authorization["authorizationToken"]).decode().split(":", 1)
+    response = ecr.get_authorization_token()
+    token = response["authorizationData"][0]["authorizationToken"]
+
+    decoded = base64.b64decode(token).decode()
+    username, password = decoded.split(":", 1)
 
     # Docker credentials exist only for this publish, including when login or push fails.
     with TemporaryDirectory(prefix="chess-docker-") as docker_config:
@@ -178,7 +189,7 @@ def publish_image(ecr, repository, local_image):
     return f"{repository}@{digest}"
 
 
-def deploy(session, stack_name, role, *, template, parameters):
+def deploy(session, stack_name, role, release: Release):
     # Use the same credentials and region as the SDK's verified deployment target.
     credentials = session.get_credentials().get_frozen_credentials()
     environment = dict(os.environ)
@@ -189,20 +200,26 @@ def deploy(session, stack_name, role, *, template, parameters):
     if credentials.token:
         environment["AWS_SESSION_TOKEN"] = credentials.token
 
-    overrides = [f"{key}={value}" for key, value in parameters.items()]
-    subprocess.run(
-        [
-            "aws", "cloudformation", "deploy",
-            "--region", session.region_name,
-            "--stack-name", stack_name,
-            "--template-file", str(template),
-            "--role-arn", role,
-            "--parameter-overrides", *overrides,
-            "--no-fail-on-empty-changeset",
-        ],
-        env=environment,
-        check=True,
-    )
+    overrides = [f"{key}={value}" for key, value in release.parameters.items()]
+
+    # Both new and previous releases become CLI input here, only for this deployment.
+    with TemporaryDirectory(prefix="chess-release-") as work:
+        template = Path(work) / "template.yaml"
+        template.write_text(release.template)
+
+        subprocess.run(
+            [
+                "aws", "cloudformation", "deploy",
+                "--region", session.region_name,
+                "--stack-name", stack_name,
+                "--template-file", str(template),
+                "--role-arn", role,
+                "--parameter-overrides", *overrides,
+                "--no-fail-on-empty-changeset",
+            ],
+            env=environment,
+            check=True,
+        )
 
 
 def main():
@@ -213,7 +230,12 @@ def main():
     args = parser.parse_args()
 
     try:
-        required = ["AWS_REGION", "AWS_ACCOUNT_ID", "FOUNDATION_STACK", "BACKEND_STACK"]
+        required = [
+            "AWS_REGION",
+            "AWS_ACCOUNT_ID",
+            "FOUNDATION_STACK",
+            "BACKEND_STACK",
+        ]
         if os.environ.get("GITHUB_ACTIONS") == "true":
             required += ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
         for name in required:
@@ -227,10 +249,10 @@ def main():
 
         return release(
             session,
-            os.environ["FOUNDATION_STACK"],
-            os.environ["BACKEND_STACK"],
-            args.local_image,
-            args.digest,
+            foundation_stack=os.environ["FOUNDATION_STACK"],
+            backend_stack=os.environ["BACKEND_STACK"],
+            local_image=args.local_image,
+            image_digest=args.digest,
         )
     except (
         ValueError,

@@ -399,7 +399,7 @@ class CommandTests(unittest.TestCase):
             with patch.dict(os.environ, settings, clear=True):
                 with patch.object(deploy.boto3, "Session", return_value=session) as constructor:
                     with patch.object(deploy.subprocess, "check_output", return_value="commit-id\n"):
-                        with patch.object(deploy, "plan") as plan:
+                        with patch.object(deploy, "plan", autospec=True) as plan:
                             self.assertEqual(deploy.main(["plan", ""]), 0)
 
                 constructor.assert_called_once_with(region_name="ap-southeast-2")
