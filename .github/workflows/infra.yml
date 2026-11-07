@@ -1,6 +1,5 @@
 name: Infrastructure
 
-
 on:
   pull_request:
     paths:
@@ -10,18 +9,14 @@ on:
 
   workflow_dispatch:
 
-
 permissions:
   contents: read
-
 
 defaults:
   run:
     shell: bash
 
-
 jobs:
-
   foundation:
     runs-on:         ubuntu-latest
     timeout-minutes: 120
@@ -33,11 +28,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install validation tools
-        run:  pip install -r infra/requirements.txt
-
-      - name: Check infrastructure
-        run:  make infra-check
+      - name: Check templates
+        run:  |
+          pip install -r infra/requirements.txt
+          make infra-check
 
       - name: Deploy infrastructure
         if:   github.ref == 'refs/heads/main'

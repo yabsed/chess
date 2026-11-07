@@ -30,11 +30,8 @@ Resources:
 
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       Family:
@@ -106,11 +103,8 @@ Resources:
   # More replicas also need more host capacity during rolling deployments.
   Service:
     Type: AWS::ECS::Service
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       ServiceName:

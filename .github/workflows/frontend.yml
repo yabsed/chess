@@ -1,6 +1,5 @@
 name: Frontend
 
-
 on:
   push:
     branches: [main]
@@ -15,19 +14,15 @@ on:
 
   workflow_dispatch:
 
-
 permissions:
   contents: read
-
 
 concurrency:
   group: >-
     pages-${{ github.event_name == 'pull_request' && github.ref || 'production' }}
   cancel-in-progress: false
 
-
 jobs:
-
   build:
     runs-on: ubuntu-latest
 

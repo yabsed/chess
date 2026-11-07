@@ -70,7 +70,7 @@ aws cloudformation deploy \
   --no-fail-on-empty-changeset
 
 
-# Check the deployed service
+# Confirm the service uses the deployed task definition
 
 outputs=$(
   aws cloudformation describe-stacks \
@@ -80,10 +80,10 @@ outputs=$(
   jq 'map({(.OutputKey): .OutputValue}) | add'
 )
 
-task=$(jq -er '.TaskDefinition' <<< "$outputs")
+expected_task=$(jq -er '.TaskDefinition' <<< "$outputs")
 service=$(jq -er '.Service' <<< "$outputs")
 
-running_task=$(
+service_task=$(
   aws ecs describe-services \
     --cluster "$cluster" \
     --services "$service" \
@@ -91,7 +91,7 @@ running_task=$(
     --output text
 )
 
-test "$running_task" = "$task"
+test "$service_task" = "$expected_task"
 
 
 # Check the public API

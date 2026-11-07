@@ -28,17 +28,13 @@ Resources:
 
   VPC:
     Type: AWS::EC2::VPC
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       CidrBlock:          10.20.0.0/16
       EnableDnsSupport:   true
       EnableDnsHostnames: true
-
 
       Tags:
         - Key:   Name
@@ -47,11 +43,8 @@ Resources:
 
   PublicSubnetA:
     Type: AWS::EC2::Subnet
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       VpcId:     !Ref VPC
@@ -61,7 +54,6 @@ Resources:
         - 0
         - !GetAZs ''
 
-
       Tags:
         - Key:   Name
           Value: !Sub '${ECSClusterName}-subnet-public1-${AWS::Region}a'
@@ -69,11 +61,8 @@ Resources:
 
   PublicSubnetB:
     Type: AWS::EC2::Subnet
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       VpcId:     !Ref VPC
@@ -83,7 +72,6 @@ Resources:
         - 1
         - !GetAZs ''
 
-
       Tags:
         - Key:   Name
           Value: !Sub '${ECSClusterName}-subnet-public2-${AWS::Region}b'
@@ -91,11 +79,8 @@ Resources:
 
   PrivateSubnetA:
     Type: AWS::EC2::Subnet
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       VpcId:     !Ref VPC
@@ -105,7 +90,6 @@ Resources:
         - 0
         - !GetAZs ''
 
-
       Tags:
         - Key:   Name
           Value: !Sub '${ECSClusterName}-subnet-private1-${AWS::Region}a'
@@ -113,11 +97,8 @@ Resources:
 
   PrivateSubnetB:
     Type: AWS::EC2::Subnet
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       VpcId:     !Ref VPC
@@ -126,7 +107,6 @@ Resources:
       AvailabilityZone: !Select
         - 1
         - !GetAZs ''
-
 
       Tags:
         - Key:   Name
@@ -137,15 +117,10 @@ Resources:
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
 
-
     Properties:
-
-
       Tags:
         - Key:   Name
           Value: !Sub '${ECSClusterName}-igw'
@@ -153,11 +128,8 @@ Resources:
 
   GatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       VpcId:             !Ref VPC
@@ -166,15 +138,11 @@ Resources:
 
   PublicRoutes:
     Type: AWS::EC2::RouteTable
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
 
-
     Properties:
       VpcId: !Ref VPC
-
 
       Tags:
         - Key:   Name
@@ -184,11 +152,8 @@ Resources:
   PublicInternetRoute:
     Type:      AWS::EC2::Route
     DependsOn: GatewayAttachment
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       RouteTableId:         !Ref PublicRoutes
@@ -198,11 +163,8 @@ Resources:
 
   PublicAssociationA:
     Type: AWS::EC2::SubnetRouteTableAssociation
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       RouteTableId: !Ref PublicRoutes
@@ -211,11 +173,8 @@ Resources:
 
   PublicAssociationB:
     Type: AWS::EC2::SubnetRouteTableAssociation
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       RouteTableId: !Ref PublicRoutes
@@ -226,15 +185,11 @@ Resources:
   NatAddress:
     Type:      AWS::EC2::EIP
     DependsOn: GatewayAttachment
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
 
-
     Properties:
       Domain: vpc
-
 
       Tags:
         - Key:   Name
@@ -243,18 +198,14 @@ Resources:
 
   NatGateway:
     Type: AWS::EC2::NatGateway
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       # Keep the imported GetAtt form; changing its syntax plans a NAT replacement.
       AllocationId:
         Fn::GetAtt: [NatAddress, AllocationId]
       SubnetId: !Ref PublicSubnetA
-
 
       Tags:
         - Key:   Name
@@ -265,15 +216,11 @@ Resources:
 
   PrivateRoutesA:
     Type: AWS::EC2::RouteTable
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
 
-
     Properties:
       VpcId: !Ref VPC
-
 
       Tags:
         - Key:   Name
@@ -282,11 +229,8 @@ Resources:
 
   PrivateInternetRouteA:
     Type: AWS::EC2::Route
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       RouteTableId:         !Ref PrivateRoutesA
@@ -296,11 +240,8 @@ Resources:
 
   PrivateAssociationA:
     Type: AWS::EC2::SubnetRouteTableAssociation
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       RouteTableId: !Ref PrivateRoutesA
@@ -311,15 +252,11 @@ Resources:
 
   PrivateRoutesB:
     Type: AWS::EC2::RouteTable
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
 
-
     Properties:
       VpcId: !Ref VPC
-
 
       Tags:
         - Key:   Name
@@ -328,11 +265,8 @@ Resources:
 
   PrivateInternetRouteB:
     Type: AWS::EC2::Route
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       RouteTableId:         !Ref PrivateRoutesB
@@ -342,11 +276,8 @@ Resources:
 
   PrivateAssociationB:
     Type: AWS::EC2::SubnetRouteTableAssociation
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       RouteTableId: !Ref PrivateRoutesB
@@ -357,11 +288,8 @@ Resources:
 
   S3Endpoint:
     Type: AWS::EC2::VPCEndpoint
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       VpcId:           !Ref VPC
@@ -370,7 +298,6 @@ Resources:
       RouteTableIds:
         - !Ref PrivateRoutesA
         - !Ref PrivateRoutesB
-
 
       Tags:
         - Key:   Name
@@ -382,11 +309,8 @@ Resources:
   # API responses are never cached; viewer headers include auth and WebSocket headers.
   ApiDistribution:
     Type: AWS::CloudFront::Distribution
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       DistributionConfig:
@@ -414,7 +338,6 @@ Resources:
         ViewerCertificate:
           CloudFrontDefaultCertificate: true
 
-
       Tags:
         - Key:   Name
           Value: !Sub '${ECSClusterName}-backend'
@@ -423,11 +346,8 @@ Resources:
   ApiOrigin:
     Type:      AWS::CloudFront::VpcOrigin
     DependsOn: GatewayAttachment
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       VpcOriginEndpointConfig:
@@ -442,11 +362,8 @@ Resources:
   # Only CloudFront may reach the private ALB. The prefix list is regional.
   LoadBalancerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       GroupName:        !Sub '${ECSClusterName}-alb'
@@ -462,11 +379,8 @@ Resources:
 
   LoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       Name:   !Sub '${ECSClusterName}-alb'
@@ -486,11 +400,8 @@ Resources:
 
   Listener:
     Type: AWS::ElasticLoadBalancingV2::Listener
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       LoadBalancerArn: !Ref LoadBalancer
@@ -503,11 +414,8 @@ Resources:
 
   TargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       Name:       !Sub '${ECSClusterName}-backend-tg'
@@ -529,11 +437,8 @@ Resources:
 
   DatabaseSecurityGroup:
     Type: AWS::EC2::SecurityGroup
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       GroupName:        !Sub '${ECSClusterName}-db'
@@ -549,11 +454,8 @@ Resources:
 
   DatabaseSubnets:
     Type: AWS::RDS::DBSubnetGroup
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       DBSubnetGroupName:        !Sub '${ECSClusterName}-db-subnets'
@@ -567,11 +469,8 @@ Resources:
   # A replacement needs an explicit data migration, even though the old DB is retained.
   Database:
     Type: AWS::RDS::DBInstance
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       DBInstanceIdentifier:   !Sub '${ECSClusterName}-db'
@@ -608,11 +507,8 @@ Resources:
   # Only the secret's identity is managed here. Never copy its value into a template.
   DatabaseUrl:
     Type: AWS::SecretsManager::Secret
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       Name: !Sub '${ECSClusterName}/database-url'
@@ -622,11 +518,8 @@ Resources:
 
   Repository:
     Type: AWS::ECR::Repository
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       RepositoryName:     !Sub '${ECSClusterName}-backend'
@@ -637,11 +530,8 @@ Resources:
 
   BackendLogs:
     Type: AWS::Logs::LogGroup
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       LogGroupName:    !Sub '/ecs/${ECSClusterName}'
@@ -652,11 +542,8 @@ Resources:
 
   BackendSecurityGroup:
     Type: AWS::EC2::SecurityGroup
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       GroupName:        !Sub '${ECSClusterName}-backend'
@@ -674,10 +561,8 @@ Resources:
   ECSCluster:
     Type: AWS::ECS::Cluster
 
-
     Properties:
       ClusterName: !Ref ECSClusterName
-
 
       Tags: []
       ClusterSettings:
@@ -692,11 +577,8 @@ Resources:
 
   InstanceRole:
     Type: AWS::IAM::Role
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       RoleName:    !Sub '${ECSClusterName}-ecs-instance'
@@ -717,11 +599,8 @@ Resources:
 
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       InstanceProfileName: !Sub '${ECSClusterName}-ecs-instance'
@@ -731,7 +610,6 @@ Resources:
 
   ECSLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
-
 
     Properties:
       LaunchTemplateData:
@@ -765,7 +643,6 @@ Resources:
   ECSAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
 
-
     UpdatePolicy:
       AutoScalingInstanceRefresh:
         Strategy: Rolling
@@ -774,7 +651,6 @@ Resources:
           MaxHealthyPercentage: 200
           InstanceWarmup:       300
           SkipMatching:         true
-
 
     Properties:
       # ECS managed scaling owns DesiredCapacity.
@@ -788,7 +664,6 @@ Resources:
         - !Ref PrivateSubnetA
         - !Ref PrivateSubnetB
 
-
       Tags:
         - Key:               Name
           PropagateAtLaunch: true
@@ -797,7 +672,6 @@ Resources:
 
   AsgCapacityProvider:
     Type: AWS::ECS::CapacityProvider
-
 
     Properties:
       AutoScalingGroupProvider:
@@ -811,7 +685,6 @@ Resources:
 
   ClusterCPAssociation:
     Type: AWS::ECS::ClusterCapacityProviderAssociations
-
 
     Properties:
       Cluster: !Ref ECSClusterName
@@ -828,11 +701,8 @@ Resources:
   # ECS task startup: pull the image, write logs and read the database secret.
   ExecutionRole:
     Type: AWS::IAM::Role
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       RoleName:    !Sub '${ECSClusterName}-ecs-execution'
@@ -864,7 +734,6 @@ Resources:
   # This role can deploy only the application stack's resources, not the foundation.
   BackendDeploymentRole:
     Type: AWS::IAM::Role
-
 
     Properties:
       RoleName: !Sub '${ECSClusterName}-backend-cloudformation'
@@ -931,11 +800,8 @@ Resources:
   # Account policy blocks IAM console-login APIs; manage this API user's policy directly.
   DeploymentPolicy:
     Type: AWS::IAM::UserPolicy
-
-
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
-
 
     Properties:
       UserName:   !Ref DeploymentUserName
@@ -1069,61 +935,3 @@ Outputs:
 
   ApiUrl:
     Value: !Sub 'https://${ApiDistribution.DomainName}'
-
-  # Exact inputs for bootstrap/access.yaml; CloudFormation resolves resource identities.
-  BootstrapFoundationStack:
-    Value: !Ref AWS::StackName
-
-  BootstrapAutoScalingGroupArn:
-    Value: !GetAtt ECSAutoScalingGroup.AutoScalingGroupARN
-
-  BootstrapCloudFrontResources:
-    Value: !Join
-      - ','
-      - - !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${ApiDistribution}'
-        - !GetAtt ApiOrigin.Arn
-
-  BootstrapNetworkResources:
-    Value: !Join
-      - ','
-      - - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:internet-gateway/${InternetGateway}'
-        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:launch-template/${ECSLaunchTemplate}'
-        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:natgateway/${NatGateway}'
-        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:route-table/${PublicRoutes}'
-        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:route-table/${PrivateRoutesA}'
-        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:route-table/${PrivateRoutesB}'
-        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/${LoadBalancerSecurityGroup}'
-        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/${BackendSecurityGroup}'
-        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/${DatabaseSecurityGroup}'
-        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${PublicSubnetA}'
-        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${PublicSubnetB}'
-        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${PrivateSubnetA}'
-        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${PrivateSubnetB}'
-        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-endpoint/${S3Endpoint}'
-        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc/${VPC}'
-        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:elastic-ip/${NatAddress.AllocationId}'
-
-  BootstrapCapacityProviderName:
-    Value: !Ref AsgCapacityProvider
-
-  BootstrapLoadBalancerResources:
-    Value: !Join
-      - ','
-      - - !Ref Listener
-        - !Ref LoadBalancer
-        - !Ref TargetGroup
-
-  BootstrapDatabaseSecretArn:
-    Value: !Ref DatabaseUrl
-
-  BootstrapLaunchTemplateId:
-    Value: !Ref ECSLaunchTemplate
-
-  BootstrapBackendSecurityGroupId:
-    Value: !Ref BackendSecurityGroup
-
-  BootstrapPrivateSubnetA:
-    Value: !Ref PrivateSubnetA
-
-  BootstrapPrivateSubnetB:
-    Value: !Ref PrivateSubnetB

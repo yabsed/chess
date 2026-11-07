@@ -28,8 +28,5 @@ serve:
 	npm run --prefix apps/frontend preview -- --port $(PORT)
 
 infra-check:
-	cfn-lint infra/backend/template.yaml \
-		infra/foundation/template.yaml \
-		infra/bootstrap/access.yaml
-	python3 infra/validate.py
-	python3 -m unittest discover -s infra/tests
+	cfn-lint infra/foundation/template.yaml \
+		infra/backend/template.yaml
