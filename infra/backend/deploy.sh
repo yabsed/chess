@@ -43,7 +43,8 @@ aws ecr get-login-password |
 
 tag="$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
 docker tag "$IMAGE" "$repository:$tag"
-docker push --platform linux/amd64 "$repository:$tag"
+test "$(docker image inspect "$IMAGE" --format '{{.Architecture}}')" = arm64
+docker push --platform linux/arm64 "$repository:$tag"
 
 digest=$(
   aws ecr batch-get-image \

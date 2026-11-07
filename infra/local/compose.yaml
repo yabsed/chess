@@ -25,9 +25,16 @@ services:
 
   backend:
     image:    ${IMAGE:-chess-backend:local}
-    platform: linux/amd64
+    platform: ${PLATFORM:-linux/arm64}
     build:    ../../apps/backend
     restart:  unless-stopped
+
+    # Exercise the production task's memory budget without hiding pressure in swap.
+    mem_limit:     1g
+    memswap_limit: 1g
+    read_only:     true
+    init:          true
+    cap_drop:      [ALL]
 
     environment:
       CHESS_DATABASE_URL: postgresql://chess:${CHESS_POSTGRES_PASSWORD:-chess}@postgres:5432/chess
