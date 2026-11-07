@@ -10,20 +10,28 @@ the listed resources and launch instances through a numbered version of the pinn
 launch template. It cannot rewrite IAM policies or role trust. The foundation
 workflow cannot change this bootstrap stack.
 
-Account and region come from CloudFormation pseudo parameters. Generated resource
-IDs are explicit parameters, prepared by [`parameters.py`](parameters.py). The
-helper only reads allowlisted foundation resources; it never changes permissions
-or issues keys. The role can read the database secret for CloudFormation's resource
+Foundation's `Bootstrap*` outputs provide the exact inputs for `access.yaml`.
+[`parameters.py`](parameters.py) checks the deployed template against this checkout,
+then validates those values against the destination parameter schema and AWS target.
+The allowlist lives in the output definitions beside the resources that supply it.
+The helper uses only STS and CloudFormation reads; it never changes permissions or
+issues keys. The role can read the database secret for CloudFormation's resource
 handler; the infrastructure user cannot read it directly.
 
 ## Update permissions
 
-From the repository root, use an authenticated operator session and export the
-[deployment settings](../README.md#run-locally). Prepare parameters outside Git:
+First apply the reviewed foundation template through Infrastructure **plan → apply**.
+The new `Bootstrap*` outputs must exist before preparing access parameters; older
+foundations are rejected. Adding these outputs does not change resources or IAM
+permissions. Backend releases can continue before this output-only update.
+
+From the repository root, use an authenticated operator session, install the
+[deployment tools and settings](../README.md#run-locally), and prepare parameters
+outside Git:
 
 ```sh
 umask 077
-python3 infra/bootstrap/parameters.py > /tmp/chess-access-parameters.json
+python3 -m infra.bootstrap.parameters > /tmp/chess-access-parameters.json
 
 aws cloudformation create-change-set \
   --stack-name chess-deployment-access \
@@ -37,6 +45,10 @@ aws cloudformation create-change-set \
 Review the resolved policy and change set before executing it. A no-change result
 needs no execution. Preserve exact resource scopes, including the launch template,
 security group and private subnets; do not replace them with wildcards.
+
+The helper rejects incomplete deployments and detects stack changes during its
+reads. The resulting JSON is a snapshot, not a lock: regenerate it if foundation
+changes before you create or apply the access change set.
 
 ## Issue or rotate keys
 

@@ -5,8 +5,8 @@ Choose the directory for the work you are doing:
 | Directory | Change |
 | --- | --- |
 | [backend/](backend/) | Application image, ECS task and service |
-| [foundation/](foundation/) | Network, traffic, database and compute |
-| [bootstrap/](bootstrap/README.md) | Deployment users' permissions and infrastructure execution role |
+| [foundation/](foundation/) | Network, traffic, database, compute and backend deployment permissions |
+| [bootstrap/](bootstrap/README.md) | Infrastructure user's permissions and foundation execution role |
 
 Each directory keeps its template beside the commands that use it. These templates
 manage existing production resources; preserve their logical IDs. They are not an
@@ -69,7 +69,10 @@ digest and verifies the actual ECS tasks and public endpoint.
 
 Release stops if the checked-in foundation differs from the deployed template.
 Comments, layout, root documentation and the obsolete revision marker do not count
-as resource changes. Resource settings and resource metadata do.
+as resource changes. Non-exported `Bootstrap*` outputs are also excluded from this
+backend check: they only supply the operator's access update. Bootstrap separately
+requires the complete reviewed template, including these outputs, before using it.
+Resource settings, resource metadata and existing backend outputs remain checked.
 
 ECS handles failed rollouts. If post-deployment checks fail, the release script
 restores the previous template and all its parameters, verifies the restoration,

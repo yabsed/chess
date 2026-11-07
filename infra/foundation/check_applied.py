@@ -25,8 +25,17 @@ def comparable_template(body):
 
 
 def check_applied(applied):
-    expected = Path(__file__).with_name("template.yaml").read_text()
+    expected = comparable_template(Path(__file__).with_name("template.yaml").read_text())
+    applied = comparable_template(applied)
 
-    if comparable_template(applied) != comparable_template(expected):
+    # Bootstrap-only outputs do not participate in backend releases. Bootstrap checks
+    # the entire template separately before using them to prepare IAM parameters.
+    for template in (applied, expected):
+        outputs = template.get("Outputs", {})
+        for name, output in list(outputs.items()):
+            if name.startswith("Bootstrap") and "Export" not in output:
+                del outputs[name]
+
+    if applied != expected:
         raise ValueError("Apply the foundation changes before deploying the backend.")
     print("Foundation matches the deployed template.")

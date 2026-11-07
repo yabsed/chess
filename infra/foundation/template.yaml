@@ -773,3 +773,57 @@ Outputs:
 
   ApiUrl:
     Value: !Sub 'https://${ApiDistribution.DomainName}'
+
+  # Exact inputs for bootstrap/access.yaml; CloudFormation resolves resource identities.
+  BootstrapFoundationStack:
+    Value: !Ref AWS::StackName
+
+  BootstrapAutoScalingGroupArn:
+    Value: !GetAtt ECSAutoScalingGroup.AutoScalingGroupARN
+
+  BootstrapCloudFrontResources:
+    Value: !Join
+      - ','
+      - - !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${ApiDistribution}'
+        - !GetAtt ApiOrigin.Arn
+
+  BootstrapNetworkResources:
+    Value: !Join
+      - ','
+      - - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:internet-gateway/${InternetGateway}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:launch-template/${ECSLaunchTemplate}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:natgateway/${NatGateway}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:route-table/${PublicRoutes}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:route-table/${PrivateRoutesA}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:route-table/${PrivateRoutesB}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/${LoadBalancerSecurityGroup}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/${BackendSecurityGroup}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/${DatabaseSecurityGroup}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${PublicSubnetA}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${PublicSubnetB}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${PrivateSubnetA}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${PrivateSubnetB}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-endpoint/${S3Endpoint}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc/${VPC}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:elastic-ip/${NatAddress.AllocationId}'
+
+  BootstrapCapacityProviderName:
+    Value: !Ref AsgCapacityProvider
+
+  BootstrapLoadBalancerResources:
+    Value: !Join [',', [!Ref Listener, !Ref LoadBalancer, !Ref TargetGroup]]
+
+  BootstrapDatabaseSecretArn:
+    Value: !Ref DatabaseUrl
+
+  BootstrapLaunchTemplateId:
+    Value: !Ref ECSLaunchTemplate
+
+  BootstrapBackendSecurityGroupId:
+    Value: !Ref BackendSecurityGroup
+
+  BootstrapPrivateSubnetA:
+    Value: !Ref PrivateSubnetA
+
+  BootstrapPrivateSubnetB:
+    Value: !Ref PrivateSubnetB

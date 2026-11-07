@@ -36,30 +36,11 @@ def verify_service(ecs, cluster: str, service: str, task: str, image: str) -> No
     if deployments[0].get("rolloutState") != "COMPLETED":
         raise VerificationError("The service deployment has not completed.")
 
-    task_arns = []
-    pages = ecs.get_paginator("list_tasks").paginate(
-        cluster=cluster,
-        serviceName=service,
-        desiredStatus="RUNNING",
-    )
-    for page in pages:
-        task_arns.extend(page.get("taskArns", []))
-
+    task_arns = list_running_tasks(ecs, cluster, service)
     if len(task_arns) != desired_count:
         raise VerificationError("The listed tasks do not match the desired task count.")
 
-    running_tasks = []
-    # ECS accepts at most 100 task ARNs in one DescribeTasks request.
-    for offset in range(0, len(task_arns), 100):
-        response = ecs.describe_tasks(
-            cluster=cluster,
-            tasks=task_arns[offset : offset + 100],
-        )
-        if response.get("failures"):
-            raise VerificationError("ECS could not describe every running task.")
-
-        running_tasks.extend(response.get("tasks", []))
-
+    running_tasks = describe_tasks(ecs, cluster, task_arns)
     if len(running_tasks) != desired_count:
         raise VerificationError("The described tasks do not match the desired task count.")
 
@@ -92,3 +73,34 @@ def verify_task(running_task: dict, expected_task: str, expected_image: str) -> 
 
     if backend.get("healthStatus") != "HEALTHY":
         raise VerificationError("A backend container is not healthy.")
+
+
+def list_running_tasks(ecs, cluster: str, service: str) -> list[str]:
+    paginator = ecs.get_paginator("list_tasks")
+    pages = paginator.paginate(
+        cluster=cluster,
+        serviceName=service,
+        desiredStatus="RUNNING",
+    )
+
+    task_arns = []
+    for page in pages:
+        task_arns.extend(page.get("taskArns", []))
+    return task_arns
+
+
+def describe_tasks(ecs, cluster: str, task_arns: list[str]) -> list[dict]:
+    running_tasks = []
+
+    # ECS accepts at most 100 task ARNs in one DescribeTasks request.
+    for offset in range(0, len(task_arns), 100):
+        response = ecs.describe_tasks(
+            cluster=cluster,
+            tasks=task_arns[offset : offset + 100],
+        )
+        if response.get("failures"):
+            raise VerificationError("ECS could not describe every running task.")
+
+        running_tasks.extend(response.get("tasks", []))
+
+    return running_tasks
