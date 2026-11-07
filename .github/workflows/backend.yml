@@ -25,6 +25,10 @@ jobs:
       group: aws-chess-${{ github.event_name == 'pull_request' && github.ref || 'production' }}
       cancel-in-progress: false
     env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      FOUNDATION_STACK: ${{ vars.FOUNDATION_STACK }}
+      BACKEND_STACK: ${{ vars.BACKEND_STACK }}
       DEPLOY: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.AWS_DEPLOY_ENABLED == 'true' }}
       IMAGE: chess-backend:${{ github.sha }}
       COMPOSE_PROJECT_NAME: chess-ci-${{ github.run_id }}-${{ github.run_attempt }}
@@ -32,15 +36,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read deployment settings
-        run: cat infra/production.env >> "$GITHUB_ENV"
-
-      - name: Check credentials
+      - name: Check deployment settings
         if: env.DEPLOY == 'true'
         env:
           ACCESS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
           SECRET_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
+          : "${AWS_REGION:?Set AWS_REGION repository variable}"
+          : "${AWS_ACCOUNT_ID:?Set AWS_ACCOUNT_ID repository variable}"
+          : "${FOUNDATION_STACK:?Set FOUNDATION_STACK repository variable}"
+          : "${BACKEND_STACK:?Set BACKEND_STACK repository variable}"
           if [[ -z "$ACCESS_KEY" || -z "$SECRET_KEY" ]]; then
             echo '::error::Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY repository secrets.'
             exit 1

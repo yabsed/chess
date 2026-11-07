@@ -4,12 +4,16 @@ set -euo pipefail
 action=${1:?Usage: foundation.sh plan | apply CHANGE_SET_ARN}
 change_set=${2:-}
 
-set -a
-source infra/production.env
-set +a
+: "${AWS_REGION:?Set AWS_REGION}"
+: "${AWS_ACCOUNT_ID:?Set AWS_ACCOUNT_ID}"
+: "${FOUNDATION_STACK:?Set FOUNDATION_STACK}"
+: "${FOUNDATION_ROLE:?Set FOUNDATION_ROLE}"
 
 account=$(aws sts get-caller-identity --query Account --output text)
-[[ $account == "$AWS_ACCOUNT_ID" ]]
+if [[ $account != "$AWS_ACCOUNT_ID" ]]; then
+  echo 'AWS account does not match AWS_ACCOUNT_ID.' >&2
+  exit 1
+fi
 
 work=${RUNNER_TEMP:-$(mktemp -d)}
 commit=$(git rev-parse HEAD)

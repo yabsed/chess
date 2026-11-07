@@ -3,12 +3,16 @@ set -euo pipefail
 
 image=${1:?Pass an ECR image digest URI}
 
-set -a
-source infra/production.env
-set +a
+: "${AWS_REGION:?Set AWS_REGION}"
+: "${AWS_ACCOUNT_ID:?Set AWS_ACCOUNT_ID}"
+: "${FOUNDATION_STACK:?Set FOUNDATION_STACK}"
+: "${BACKEND_STACK:?Set BACKEND_STACK}"
 
 account=$(aws sts get-caller-identity --query Account --output text)
-[[ $account == "$AWS_ACCOUNT_ID" ]]
+if [[ $account != "$AWS_ACCOUNT_ID" ]]; then
+  echo 'AWS account does not match AWS_ACCOUNT_ID.' >&2
+  exit 1
+fi
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
