@@ -30,12 +30,20 @@ if [[ "$architecture" != arm64 ]]; then
     exit 1
   fi
 
-  imports=$(
+  if ! imports=$(
     aws cloudformation list-imports \
       --export-name "$FOUNDATION_STACK-TargetGroup" \
       --query Imports \
-      --output json
-  )
+      --output json 2>&1
+  ); then
+    # AWS reports an unreferenced export as ValidationError, not an empty list.
+    no_imports="Export '$FOUNDATION_STACK-TargetGroup' is not imported by any stack."
+    if [[ "$imports" != *"(ValidationError)"* || "$imports" != *"$no_imports"* ]]; then
+      printf '%s\n' "$imports" >&2
+      exit 1
+    fi
+    imports='[]'
+  fi
 
   if [[ "$(jq 'length' <<< "$imports")" != 0 ]]; then
     echo 'First ARM deployment requires the manual AWS workflow with migrate=true.' >&2
