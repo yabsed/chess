@@ -24,6 +24,8 @@ def parameters(session, stack_name, expected_account):
 
     partition = identity["Arn"].split(":")[1]
     region = session.region_name
+
+    # Reviewed foundation
     cloudformation = session.client("cloudformation")
     response = cloudformation.describe_stacks(StackName=stack_name)
     stack = response["Stacks"][0]
@@ -35,17 +37,25 @@ def parameters(session, stack_name, expected_account):
     if not stack["StackId"].startswith(stack_prefix):
         raise ValueError("Foundation stack does not match the requested account, region and name.")
 
-    applied = cloudformation.get_template(StackName=stack["StackId"], TemplateStage="Original")
+    applied = cloudformation.get_template(
+        StackName     = stack["StackId"],
+        TemplateStage = "Original",
+    )
     expected = comparable_template(FOUNDATION.read_text())
     if comparable_template(applied["TemplateBody"]) != expected:
         raise ValueError("Apply the reviewed foundation template before preparing bootstrap permissions.")
 
     # Do not pair outputs from one deployment with a template from another.
     confirmed = cloudformation.describe_stacks(StackName=stack["StackId"])["Stacks"][0]
-    for field in ("StackId", "StackStatus", "CreationTime", "LastUpdatedTime", "Parameters", "Outputs"):
+    for field in (
+        "StackId", "StackStatus",
+        "CreationTime", "LastUpdatedTime",
+        "Parameters", "Outputs",
+    ):
         if confirmed.get(field) != stack.get(field):
             raise ValueError("Foundation changed while reading it. Retry after deployment completes.")
 
+    # Bootstrap inputs
     outputs = {item["OutputKey"]: item["OutputValue"] for item in stack.get("Outputs", [])}
     definitions = comparable_template(ACCESS.read_text())["Parameters"]
     result = []

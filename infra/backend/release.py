@@ -47,8 +47,8 @@ def release(session, foundation_stack, backend_stack, local_image, image_digest)
     check_image(repository, new_image)
 
     new_release = Release(
-        template=Path(__file__).with_name("template.yaml").read_text(),
-        parameters={
+        template   = Path(__file__).with_name("template.yaml").read_text(),
+        parameters = {
             "FoundationStack": foundation_stack,
             "ImageUri":        new_image,
         },
@@ -149,10 +149,11 @@ def check_image(repository, image):
 
 def publish_image(ecr, repository, local_image):
     registry, repository_name = repository.split("/", 1)
-    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    run = os.environ.get("GITHUB_RUN_ID") or str(int(time.time()))
+    commit  = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    run     = os.environ.get("GITHUB_RUN_ID") or str(int(time.time()))
     attempt = os.environ.get("GITHUB_RUN_ATTEMPT") or "1"
-    tag = f"{commit}-{run}-{attempt}"
+
+    tag          = f"{commit}-{run}-{attempt}"
     tagged_image = f"{repository}:{tag}"
 
     response = ecr.get_authorization_token()
@@ -166,21 +167,21 @@ def publish_image(ecr, repository, local_image):
         docker_env = dict(os.environ, DOCKER_CONFIG=docker_config)
         subprocess.run(
             ["docker", "login", "--username", username, "--password-stdin", registry],
-            input=password + "\n",
-            text=True,
-            env=docker_env,
-            check=True,
+            input = password + "\n",
+            text  = True,
+            env   = docker_env,
+            check = True,
         )
         subprocess.run(["docker", "tag", local_image, tagged_image], env=docker_env, check=True)
         subprocess.run(
             ["docker", "push", "--platform", "linux/amd64", tagged_image],
-            env=docker_env,
-            check=True,
+            env   = docker_env,
+            check = True,
         )
 
     response = ecr.batch_get_image(
-        repositoryName=repository_name,
-        imageIds=[{"imageTag": tag}],
+        repositoryName = repository_name,
+        imageIds       = [{"imageTag": tag}],
     )
     if response.get("failures") or not response.get("images"):
         raise ValueError("ECR did not return the published image digest.")
@@ -193,8 +194,9 @@ def deploy(session, stack_name, role, release: Release):
     # Use the same credentials and region as the SDK's verified deployment target.
     credentials = session.get_credentials().get_frozen_credentials()
     environment = dict(os.environ)
-    environment["AWS_ACCESS_KEY_ID"] = credentials.access_key
+    environment["AWS_ACCESS_KEY_ID"]     = credentials.access_key
     environment["AWS_SECRET_ACCESS_KEY"] = credentials.secret_key
+
     environment.pop("AWS_SECURITY_TOKEN", None)
     environment.pop("AWS_SESSION_TOKEN", None)
     if credentials.token:
@@ -210,15 +212,16 @@ def deploy(session, stack_name, role, release: Release):
         subprocess.run(
             [
                 "aws", "cloudformation", "deploy",
-                "--region", session.region_name,
-                "--stack-name", stack_name,
-                "--template-file", str(template),
-                "--role-arn", role,
+
+                "--region",              session.region_name,
+                "--stack-name",          stack_name,
+                "--template-file",       str(template),
+                "--role-arn",            role,
                 "--parameter-overrides", *overrides,
                 "--no-fail-on-empty-changeset",
             ],
-            env=environment,
-            check=True,
+            env   = environment,
+            check = True,
         )
 
 
@@ -249,10 +252,11 @@ def main():
 
         return release(
             session,
-            foundation_stack=os.environ["FOUNDATION_STACK"],
-            backend_stack=os.environ["BACKEND_STACK"],
-            local_image=args.local_image,
-            image_digest=args.digest,
+            foundation_stack = os.environ["FOUNDATION_STACK"],
+            backend_stack    = os.environ["BACKEND_STACK"],
+
+            local_image  = args.local_image,
+            image_digest = args.digest,
         )
     except (
         ValueError,

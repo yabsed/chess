@@ -16,25 +16,20 @@ def verify_service(ecs, cluster: str, service: str, task: str, image: str) -> No
         raise VerificationError(f"Expected one ECS service named {service}.")
 
     deployed_service = services[0]
-    if deployed_service.get("taskDefinition") != task:
-        raise VerificationError("The service uses a different task definition.")
+    expect_field(deployed_service, "taskDefinition", task)
 
     desired_count = deployed_service.get("desiredCount", 0)
     if desired_count <= 0:
         raise VerificationError("The service must have at least one desired task.")
 
-    if deployed_service.get("runningCount") != desired_count:
-        raise VerificationError("The service has not reached its desired task count.")
-
-    if deployed_service.get("pendingCount") != 0:
-        raise VerificationError("The service still has pending tasks.")
+    expect_field(deployed_service, "runningCount", desired_count)
+    expect_field(deployed_service, "pendingCount", 0)
 
     deployments = deployed_service.get("deployments", [])
     if len(deployments) != 1:
         raise VerificationError("The service must have exactly one deployment.")
 
-    if deployments[0].get("rolloutState") != "COMPLETED":
-        raise VerificationError("The service deployment has not completed.")
+    expect_field(deployments[0], "rolloutState", "COMPLETED")
 
     task_arns = list_running_tasks(ecs, cluster, service)
     if len(task_arns) != desired_count:
@@ -49,11 +44,8 @@ def verify_service(ecs, cluster: str, service: str, task: str, image: str) -> No
 
 
 def verify_task(running_task: dict, expected_task: str, expected_image: str) -> None:
-    if running_task.get("taskDefinitionArn") != expected_task:
-        raise VerificationError("A running task uses a different task definition.")
-
-    if running_task.get("lastStatus") != "RUNNING":
-        raise VerificationError("A service task is not running.")
+    expect_field(running_task, "taskDefinitionArn", expected_task)
+    expect_field(running_task, "lastStatus",        "RUNNING")
 
     backend_containers = [
         container
@@ -64,15 +56,17 @@ def verify_task(running_task: dict, expected_task: str, expected_image: str) -> 
         raise VerificationError("A service task must have one backend container.")
 
     backend = backend_containers[0]
-    if backend.get("image") != expected_image:
-        raise VerificationError("A backend container uses a different image URI.")
-
     expected_digest = expected_image.rsplit("@", 1)[-1]
-    if backend.get("imageDigest") != expected_digest:
-        raise VerificationError("A backend container runs a different image digest.")
 
-    if backend.get("healthStatus") != "HEALTHY":
-        raise VerificationError("A backend container is not healthy.")
+    expect_field(backend, "image",        expected_image)
+    expect_field(backend, "imageDigest",  expected_digest)
+    expect_field(backend, "healthStatus", "HEALTHY")
+
+
+def expect_field(record: dict, field: str, expected: object) -> None:
+    actual = record.get(field)
+    if actual != expected:
+        raise VerificationError(f"{field}: expected {expected!r}, got {actual!r}.")
 
 
 def list_running_tasks(ecs, cluster: str, service: str) -> list[str]:

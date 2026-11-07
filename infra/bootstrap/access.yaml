@@ -61,6 +61,7 @@ Resources:
     Properties:
       UserName: chess-github-infra
       PolicyName: chess-foundation-deploy
+
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -111,13 +112,14 @@ Resources:
     Properties:
       RoleName: chess-foundation-cloudformation
       Description: CloudFormation updates to the existing chess foundation resource allowlist.
+
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
-            Principal:
-              Service: cloudformation.amazonaws.com
+            Principal: {Service: cloudformation.amazonaws.com}
             Action: sts:AssumeRole
+
       Policies:
         - PolicyName: foundation
           PolicyDocument:

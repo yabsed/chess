@@ -31,14 +31,16 @@ def plan(cloudformation, stack_name, role_arn, template, description, work):
     attempt = os.environ.get("GITHUB_RUN_ATTEMPT") or "1"
 
     created = cloudformation.create_change_set(
-        StackName=stack_name,
-        ChangeSetName=f"{stack_name}-{run}-{attempt}",
-        ChangeSetType="UPDATE",
-        Description=description,
-        TemplateBody=template,
-        Parameters=parameters,
-        RoleARN=role_arn,
-        Capabilities=["CAPABILITY_NAMED_IAM"],
+        StackName     = stack_name,
+        ChangeSetName = f"{stack_name}-{run}-{attempt}",
+        ChangeSetType = "UPDATE",
+
+        Description  = description,
+        TemplateBody = template,
+        Parameters   = parameters,
+
+        RoleARN      = role_arn,
+        Capabilities = ["CAPABILITY_NAMED_IAM"],
     )
     change_set = created["Id"]
 
@@ -75,6 +77,7 @@ def apply(cloudformation, stack_name, change_set, description, work):
     changes = read_plan(cloudformation, change_set)
     save_json(work / "changes.json", changes)
 
+    # Plan identity and readiness
     if changes.get("StackId") != stack["StackId"]:
         raise ValueError("The plan belongs to another stack. Run plan again.")
 
@@ -90,6 +93,7 @@ def apply(cloudformation, stack_name, change_set, description, work):
     if not isinstance(changes.get("Changes"), list):
         raise ValueError("The plan has no resource change list. Run plan again.")
 
+    # Allowed resource changes
     for change in changes["Changes"]:
         resource = change.get("ResourceChange", {})
 
@@ -108,12 +112,12 @@ def apply(cloudformation, stack_name, change_set, description, work):
 
     # Finish every check before changing the policy or executing the plan.
     cloudformation.set_stack_policy(
-        StackName=stack_name,
-        StackPolicyBody=STACK_POLICY.read_text(),
+        StackName       = stack_name,
+        StackPolicyBody = STACK_POLICY.read_text(),
     )
     cloudformation.execute_change_set(
-        ChangeSetName=change_set,
-        DisableRollback=False,
+        ChangeSetName   = change_set,
+        DisableRollback = False,
     )
     waiter = cloudformation.get_waiter("stack_update_complete")
     waiter.wait(StackName=stack_name)
@@ -214,19 +218,21 @@ def main(argv=None):
             role_arn = f"arn:aws:iam::{account}:role/{role_name}"
             plan(
                 cloudformation,
-                stack_name=stack_name,
-                role_arn=role_arn,
-                template=template.decode(),
-                description=description,
-                work=work,
+                stack_name  = stack_name,
+                role_arn    = role_arn,
+
+                template    = template.decode(),
+                description = description,
+                work        = work,
             )
         else:
             apply(
                 cloudformation,
-                stack_name=stack_name,
-                change_set=args.change_set,
-                description=description,
-                work=work,
+                stack_name  = stack_name,
+                change_set  = args.change_set,
+
+                description = description,
+                work        = work,
             )
 
         return 0

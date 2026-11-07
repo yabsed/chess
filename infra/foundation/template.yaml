@@ -31,8 +31,7 @@ Resources:
       EnableDnsSupport: true
       EnableDnsHostnames: true
       Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-vpc'
+        - {Key: Name, Value: !Sub '${ECSClusterName}-vpc'}
 
   PublicSubnetA:
     Type: AWS::EC2::Subnet
@@ -43,8 +42,7 @@ Resources:
       AvailabilityZone: !Select [0, !GetAZs '']
       CidrBlock: 10.20.0.0/20
       Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-subnet-public1-${AWS::Region}a'
+        - {Key: Name, Value: !Sub '${ECSClusterName}-subnet-public1-${AWS::Region}a'}
 
   PublicSubnetB:
     Type: AWS::EC2::Subnet
@@ -55,8 +53,7 @@ Resources:
       AvailabilityZone: !Select [1, !GetAZs '']
       CidrBlock: 10.20.16.0/20
       Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-subnet-public2-${AWS::Region}b'
+        - {Key: Name, Value: !Sub '${ECSClusterName}-subnet-public2-${AWS::Region}b'}
 
   PrivateSubnetA:
     Type: AWS::EC2::Subnet
@@ -67,8 +64,7 @@ Resources:
       AvailabilityZone: !Select [0, !GetAZs '']
       CidrBlock: 10.20.128.0/20
       Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-subnet-private1-${AWS::Region}a'
+        - {Key: Name, Value: !Sub '${ECSClusterName}-subnet-private1-${AWS::Region}a'}
 
   PrivateSubnetB:
     Type: AWS::EC2::Subnet
@@ -79,8 +75,7 @@ Resources:
       AvailabilityZone: !Select [1, !GetAZs '']
       CidrBlock: 10.20.144.0/20
       Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-subnet-private2-${AWS::Region}b'
+        - {Key: Name, Value: !Sub '${ECSClusterName}-subnet-private2-${AWS::Region}b'}
 
   # Public internet route
 
@@ -90,8 +85,7 @@ Resources:
     UpdateReplacePolicy: Retain
     Properties:
       Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-igw'
+        - {Key: Name, Value: !Sub '${ECSClusterName}-igw'}
 
   GatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -108,8 +102,7 @@ Resources:
     Properties:
       VpcId: !Ref VPC
       Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-rtb-public'
+        - {Key: Name, Value: !Sub '${ECSClusterName}-rtb-public'}
 
   PublicInternetRoute:
     Type: AWS::EC2::Route
@@ -146,8 +139,7 @@ Resources:
     Properties:
       Domain: vpc
       Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-eip-${AWS::Region}a'
+        - {Key: Name, Value: !Sub '${ECSClusterName}-eip-${AWS::Region}a'}
 
   NatGateway:
     Type: AWS::EC2::NatGateway
@@ -159,8 +151,7 @@ Resources:
         Fn::GetAtt: [NatAddress, AllocationId]
       SubnetId: !Ref PublicSubnetA
       Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-nat-public1-${AWS::Region}a'
+        - {Key: Name, Value: !Sub '${ECSClusterName}-nat-public1-${AWS::Region}a'}
 
   # Private subnet A route
 
@@ -171,8 +162,7 @@ Resources:
     Properties:
       VpcId: !Ref VPC
       Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-rtb-private1-${AWS::Region}a'
+        - {Key: Name, Value: !Sub '${ECSClusterName}-rtb-private1-${AWS::Region}a'}
 
   PrivateInternetRouteA:
     Type: AWS::EC2::Route
@@ -200,8 +190,7 @@ Resources:
     Properties:
       VpcId: !Ref VPC
       Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-rtb-private2-${AWS::Region}b'
+        - {Key: Name, Value: !Sub '${ECSClusterName}-rtb-private2-${AWS::Region}b'}
 
   PrivateInternetRouteB:
     Type: AWS::EC2::Route
@@ -232,8 +221,7 @@ Resources:
       ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
       RouteTableIds: [!Ref PrivateRoutesA, !Ref PrivateRoutesB]
       Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-vpce-s3'
+        - {Key: Name, Value: !Sub '${ECSClusterName}-vpce-s3'}
 
   # Traffic: CloudFront -> private ALB -> backend
 
@@ -247,6 +235,7 @@ Resources:
         Enabled: true
         HttpVersion: http2
         IPV6Enabled: true
+
         Origins:
           - Id: backend
             DomainName: !GetAtt LoadBalancer.DNSName
@@ -254,6 +243,7 @@ Resources:
               VpcOriginId: !GetAtt ApiOrigin.Id
               OriginReadTimeout: 30
               OriginKeepaliveTimeout: 5
+
         DefaultCacheBehavior:
           TargetOriginId: backend
           ViewerProtocolPolicy: https-only
@@ -262,11 +252,10 @@ Resources:
           Compress: true
           CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
           OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3
-        ViewerCertificate:
-          CloudFrontDefaultCertificate: true
+
+        ViewerCertificate: {CloudFrontDefaultCertificate: true}
       Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-backend'
+        - {Key: Name, Value: !Sub '${ECSClusterName}-backend'}
 
   ApiOrigin:
     Type: AWS::CloudFront::VpcOrigin
@@ -290,6 +279,7 @@ Resources:
     Properties:
       GroupName: !Sub '${ECSClusterName}-alb'
       GroupDescription: Public HTTPS entry
+
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -305,8 +295,10 @@ Resources:
       Name: !Sub '${ECSClusterName}-alb'
       Scheme: internal
       Type: application
+
       Subnets: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
       SecurityGroups: [!Ref LoadBalancerSecurityGroup]
+
       LoadBalancerAttributes:
         - Key: idle_timeout.timeout_seconds
           Value: '60'
@@ -333,13 +325,13 @@ Resources:
       TargetType: ip
       Protocol: HTTP
       Port: 8000
+
       HealthCheckPath: /api/health
       HealthCheckIntervalSeconds: 30
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 5
       UnhealthyThresholdCount: 2
-      Matcher:
-        HttpCode: '200'
+      Matcher: {HttpCode: '200'}
 
   # Database
 
@@ -350,6 +342,7 @@ Resources:
     Properties:
       GroupName: !Sub '${ECSClusterName}-db'
       GroupDescription: PostgreSQL access from backend
+
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -419,8 +412,7 @@ Resources:
     Properties:
       RepositoryName: !Sub '${ECSClusterName}-backend'
       ImageTagMutability: IMMUTABLE
-      EncryptionConfiguration:
-        EncryptionType: AES256
+      EncryptionConfiguration: {EncryptionType: AES256}
 
   BackendLogs:
     Type: AWS::Logs::LogGroup
@@ -439,6 +431,7 @@ Resources:
     Properties:
       GroupName: !Sub '${ECSClusterName}-backend'
       GroupDescription: Backend access from ALB
+
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -468,13 +461,14 @@ Resources:
     Properties:
       RoleName: !Sub '${ECSClusterName}-ecs-instance'
       Description: Allows EC2 instances to call AWS services on your behalf.
+
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
-            Principal:
-              Service: ec2.amazonaws.com
+            Principal: {Service: ec2.amazonaws.com}
             Action: sts:AssumeRole
+
       ManagedPolicyArns:
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role'
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
@@ -494,8 +488,7 @@ Resources:
         # Pin the reviewed AL2023 x86-64 AMI; upgrades are explicit template changes.
         ImageId: ami-003b37e6c99f7531d
         InstanceType: t3.small
-        IamInstanceProfile:
-          Arn: !GetAtt InstanceProfile.Arn
+        IamInstanceProfile: {Arn: !GetAtt InstanceProfile.Arn}
 
         NetworkInterfaces:
           - AssociatePublicIpAddress: false
@@ -527,13 +520,15 @@ Resources:
           InstanceWarmup: 300
           SkipMatching: true
     Properties:
+      # ECS managed scaling owns DesiredCapacity.
       MinSize: '1'
       MaxSize: '2'
-      # ECS managed scaling owns DesiredCapacity.
+
       LaunchTemplate:
         LaunchTemplateId: !Ref ECSLaunchTemplate
         Version: !GetAtt ECSLaunchTemplate.LatestVersionNumber
       VPCZoneIdentifier: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+
       Tags:
         - Key: Name
           PropagateAtLaunch: true
@@ -568,15 +563,17 @@ Resources:
     Properties:
       RoleName: !Sub '${ECSClusterName}-ecs-execution'
       Description: Allows ECS tasks to call AWS services on your behalf.
+
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
-            Principal:
-              Service: ecs-tasks.amazonaws.com
+            Principal: {Service: ecs-tasks.amazonaws.com}
             Action: sts:AssumeRole
+
       ManagedPolicyArns:
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+
       Policies:
         - PolicyName: chess-db-secret
           PolicyDocument:
@@ -593,13 +590,14 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub '${ECSClusterName}-backend-cloudformation'
+
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
-            Principal:
-              Service: cloudformation.amazonaws.com
+            Principal: {Service: cloudformation.amazonaws.com}
             Action: sts:AssumeRole
+
       Policies:
         - PolicyName: backend
           PolicyDocument:
@@ -655,6 +653,7 @@ Resources:
     Properties:
       UserName: !Ref DeploymentUserName
       PolicyName: chess-deploy
+
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -722,48 +721,39 @@ Resources:
 Outputs:
   ECSCluster:
     Value: !Ref ECSCluster
-    Export:
-      Name: !Sub '${AWS::StackName}-Cluster'
+    Export: {Name: !Sub '${AWS::StackName}-Cluster'}
 
   CapacityProvider:
     Value: !Ref AsgCapacityProvider
-    Export:
-      Name: !Sub '${AWS::StackName}-CapacityProvider'
+    Export: {Name: !Sub '${AWS::StackName}-CapacityProvider'}
 
   PrivateSubnets:
     Value: !Join [',', [!Ref PrivateSubnetA, !Ref PrivateSubnetB]]
-    Export:
-      Name: !Sub '${AWS::StackName}-PrivateSubnets'
+    Export: {Name: !Sub '${AWS::StackName}-PrivateSubnets'}
 
   ProxyCidrs:
     Value: !Join [',', [!GetAtt PrivateSubnetA.CidrBlock, !GetAtt PrivateSubnetB.CidrBlock]]
-    Export:
-      Name: !Sub '${AWS::StackName}-ProxyCidrs'
+    Export: {Name: !Sub '${AWS::StackName}-ProxyCidrs'}
 
   BackendSecurityGroup:
     Value: !Ref BackendSecurityGroup
-    Export:
-      Name: !Sub '${AWS::StackName}-BackendSecurityGroup'
+    Export: {Name: !Sub '${AWS::StackName}-BackendSecurityGroup'}
 
   TargetGroup:
     Value: !Ref TargetGroup
-    Export:
-      Name: !Sub '${AWS::StackName}-TargetGroup'
+    Export: {Name: !Sub '${AWS::StackName}-TargetGroup'}
 
   ExecutionRole:
     Value: !GetAtt ExecutionRole.Arn
-    Export:
-      Name: !Sub '${AWS::StackName}-ExecutionRole'
+    Export: {Name: !Sub '${AWS::StackName}-ExecutionRole'}
 
   DatabaseUrl:
     Value: !Ref DatabaseUrl
-    Export:
-      Name: !Sub '${AWS::StackName}-DatabaseUrl'
+    Export: {Name: !Sub '${AWS::StackName}-DatabaseUrl'}
 
   LogGroup:
     Value: !Ref BackendLogs
-    Export:
-      Name: !Sub '${AWS::StackName}-LogGroup'
+    Export: {Name: !Sub '${AWS::StackName}-LogGroup'}
 
   RepositoryUri:
     Value: !GetAtt Repository.RepositoryUri
