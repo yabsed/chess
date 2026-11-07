@@ -535,7 +535,7 @@ Resources:
 
     Properties:
       LogGroupName:    !Sub '/ecs/${ECSClusterName}'
-      RetentionInDays: 7
+      RetentionInDays: 5
 
 
   # Compute
