@@ -8,7 +8,7 @@ Read the [AWS workflow](../.github/workflows/deploy.yml) for the order,
 | Foundation | [Network, EC2, load balancer, database and roles](foundation/template.yaml) |
 | Backend | [Container settings and ECS service](backend/template.yaml) |
 
-Pushes to `main` that change `apps/backend/`, `infra/`, `Makefile`, `compose.yaml`
+Pushes to `main` that change `apps/backend/`, `infra/`, `Makefile`
 or the workflow run this sequence when `AWS_DEPLOY_ENABLED=true`:
 
 ```text
@@ -69,8 +69,28 @@ make infra-check
 python3 -m infra.backend.smoke http://127.0.0.1:8000
 ```
 
-The smoke command needs a running backend. CI uses Docker Compose to start it.
+The smoke command needs a running backend. CI uses [local/compose.yaml](local/compose.yaml)
+to start it with Docker Compose.
 These checks do not test SQL migrations or enforce custom infrastructure policies.
+
+## Local containers
+
+`make backend` starts the backend and PostgreSQL using [local/compose.yaml](local/compose.yaml).
+The Compose project is named `chess` to keep existing local volume names.
+CI overrides that name for each run.
+
+For local settings, copy [local/.env.example](local/.env.example) to `local/.env`.
+Compose builds the database URL from `CHESS_POSTGRES_PASSWORD`; the defaults work
+without an environment file.
+
+To serve a single public server with Caddy, set `CHESS_IP` to its public IP
+and `CHESS_ORIGIN` to the frontend's HTTPS origin in `infra/local/.env`.
+From the repository root, run:
+
+```sh
+docker compose -f infra/local/compose.yaml --profile public \
+  up -d --build
+```
 
 ## Resource changes
 

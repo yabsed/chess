@@ -7,10 +7,12 @@ install:
 	npm ci --prefix apps/frontend
 
 database:
-	docker compose up -d --wait postgres
+	docker compose -f infra/local/compose.yaml \
+		up -d --wait postgres
 
 backend: image
-	IMAGE="$(IMAGE)" docker compose up -d --no-build backend
+	IMAGE="$(IMAGE)" docker compose -f infra/local/compose.yaml \
+		up -d --no-build backend
 
 frontend:
 	npm run --prefix apps/frontend dev -- --port $(PORT)
