@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-url=${1:?Pass the API origin}
+url=${1:?Pass the API origin, such as http://127.0.0.1:8000}
 response=$(mktemp)
 trap 'rm -f "$response" "$response.error"' EXIT
 
