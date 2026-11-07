@@ -20,6 +20,7 @@
 
   let status = $derived.by(() => {
     if (game?.outcome) {
+      if (game.outcome.result === '*')       return 'Game aborted';
       if (game.outcome.result === '1/2-1/2') return 'Draw';
       if (game.outcome.result === '1-0')     return 'White wins';
       return 'Black wins';
@@ -67,6 +68,8 @@
     seventyfive_moves     : '75-move rule',
     fivefold_repetition   : 'Fivefold repetition',
     resignation           : 'Resignation',
+    abandonment           : 'Player did not reconnect',
+    aborted               : 'Neither player returned',
     draw_claim            : 'Threefold repetition or 50-move rule',
     agreement             : 'Draw by agreement',
   };
@@ -138,10 +141,17 @@
         {/if}
 
         {#if game.outcome}
-          <p>{game.outcome.result} · {endReasons[game.outcome.reason] ?? game.outcome.reason}</p>
+          <p>
+            {game.outcome.result === '*' ? 'No winner' : game.outcome.result}
+            · {endReasons[game.outcome.reason] ?? game.outcome.reason}
+          </p>
           <button disabled={!room.canSend} onclick={() => room.enter('match')}>Find opponent</button>
           <button class="secondary" disabled={!room.canSend} onclick={() => room.enter('create')}>Invite a friend</button>
         {:else if room.inProgress}
+          {#if game.connected.length < 2}
+            <p role="status">A disconnected player has up to 60 seconds to return.</p>
+          {/if}
+
           <div class="commands">
             {#if room.drawOfferedToMe}
               <p>Your opponent offers a draw.</p>

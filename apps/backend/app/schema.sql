@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     expires_at TIMESTAMPTZ NOT NULL DEFAULT now() + interval '7 days'
 );
 
--- Game seats remain assigned when a player disconnects.
+-- Seats survive brief disconnects; expired games keep their result.
 CREATE TABLE IF NOT EXISTS rooms (
     id         TEXT PRIMARY KEY,
     white_id   BIGINT NOT NULL REFERENCES users(id),

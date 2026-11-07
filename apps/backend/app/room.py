@@ -40,6 +40,56 @@ def authenticated(db, sid: str) -> dict:
 
 
 def expire(db) -> None:
+    # Lobby operations hold the seating lock; moves also need the room lock.
+    abandoned = db.execute("""
+        SELECT
+            room.*,
+            white.user_id IS NOT NULL AS white_absent,
+            black.user_id IS NOT NULL AS black_absent
+
+        FROM rooms AS room
+
+        LEFT JOIN players AS white
+            ON white.user_id = room.white_id
+           AND white.room_id = room.id
+           AND (white.seen_at IS NULL OR white.seen_at <= now() - interval '60 seconds')
+
+        LEFT JOIN players AS black
+            ON black.user_id = room.black_id
+           AND black.room_id = room.id
+           AND (black.seen_at IS NULL OR black.seen_at <= now() - interval '60 seconds')
+
+        WHERE NOT room.finished
+          AND (white.user_id IS NOT NULL OR black.user_id IS NOT NULL)
+        ORDER BY room.id
+        FOR UPDATE OF room
+    """).fetchall()
+
+    for room in abandoned:
+        room_id = room["id"]
+
+        if room["black_id"] is None:
+            db.execute(t"DELETE FROM rooms WHERE id = {room_id}")
+
+        else:
+            loser = None
+            if not (room["white_absent"] and room["black_absent"]):
+                loser = "white" if room["white_absent"] else "black"
+
+            game = Game.restore(room["game"])
+            game.abandon(loser)
+            record = Jsonb(game.record())
+
+            db.execute(t"""
+                UPDATE rooms
+                SET game       = {record},
+                    finished   = true,
+                    updated_at = now()
+                WHERE id = {room_id}
+            """)
+
+        notify(db, room["white_id"])
+
     db.execute("""
         DELETE FROM rooms
         WHERE updated_at < now() - interval '24 hours'
@@ -137,7 +187,6 @@ def disconnect(sids: list[str]) -> None:
             UPDATE players
             SET sid        = NULL,
                 token_hash = NULL,
-                seen_at    = NULL,
                 waiting_at = NULL
             WHERE sid = ANY({sids})
             RETURNING user_id
@@ -147,7 +196,10 @@ def disconnect(sids: list[str]) -> None:
 
 
 def heartbeat(sids: list[str]) -> None:
-    with pool.connection() as db:
+    with lobby_transaction() as db:
+        # Check deadlines before a late reconnect or heartbeat can renew them.
+        expire(db)
+
         db.execute(t"""
             UPDATE players
             SET seen_at = now()
