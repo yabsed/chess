@@ -79,6 +79,7 @@ jobs:
         if:   >-
           github.ref == 'refs/heads/main'
           && vars.AWS_DEPLOY_ENABLED == 'true'
+        run:  bash infra/backend/deploy.sh
 
         env:
           AWS_DEFAULT_REGION:    ${{ vars.AWS_REGION }}
@@ -89,5 +90,3 @@ jobs:
 
           FOUNDATION_STACK: ${{ vars.FOUNDATION_STACK }}
           BACKEND_STACK:    ${{ vars.BACKEND_STACK }}
-
-        run: bash infra/backend/deploy.sh

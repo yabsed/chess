@@ -12,8 +12,16 @@ from psycopg_pool import ConnectionPool
 URL = os.environ["CHESS_DATABASE_URL"]
 
 pool = ConnectionPool(
-    URL, open = False, min_size = 1, max_size = 8, timeout = 5,
-    kwargs = {"row_factory": dict_row, "connect_timeout": 5},
+    URL,
+    open     = False,
+    min_size = 1,
+    max_size = 8,
+    timeout  = 5,
+
+    kwargs = {
+        "row_factory":     dict_row,
+        "connect_timeout": 5,
+    },
 )
 
 

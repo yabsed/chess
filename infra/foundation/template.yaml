@@ -563,7 +563,7 @@ Resources:
         - !Ref PrivateSubnetB
 
 
-  # Adopt the existing database without changing its credentials or storage engine.
+  # Keep the database's credentials and storage engine.
   # A replacement needs an explicit data migration, even though the old DB is retained.
   Database:
     Type: AWS::RDS::DBInstance

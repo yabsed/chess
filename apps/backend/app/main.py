@@ -34,8 +34,12 @@ api.add_middleware(
 )
 
 sio = AsyncServer(
-    async_mode = "asgi", async_handlers = False, max_http_buffer_size = 4096,
-    cors_allowed_origins = [ORIGIN], cors_credentials = False,
+    async_mode           = "asgi",
+    async_handlers       = False,
+    max_http_buffer_size = 4096,
+
+    cors_allowed_origins = [ORIGIN],
+    cors_credentials     = False,
 )
 
 # Cache the source of each screen, so unchanged games need no reconstruction.
@@ -55,11 +59,13 @@ def wake(*users: str) -> None:
 async def refresh(sids: list[str]) -> None:
     if not sids:
         return
+
     rows = await run_in_threadpool(room.read, sids)
 
     for sid in sids:
         if sid not in clients:
             continue
+
         row = rows.get(sid)
         if row is None:
             await sio.emit("session_closed", "Signed out or connected in another tab.", to = sid)
@@ -75,18 +81,19 @@ async def listen() -> None:
     while True:
         try:
             async with await psycopg.AsyncConnection.connect(
-                db.URL, autocommit = True, connect_timeout = 5,
+                db.URL,
+                autocommit      = True,
+                connect_timeout = 5,
             ) as connection:
                 await connection.execute("LISTEN chess")
                 wake(*clients.values())
+
                 while True:
                     async for notice in connection.notifies(timeout = 10, stop_after = 1):
-                        # Older tasks send an empty payload during a rolling deployment.
-                        if notice.payload:
-                            wake(notice.payload)
-                        else:
-                            wake(*clients.values())
+                        wake(notice.payload)
+
                     await connection.execute("SELECT 1")
+
         except psycopg.Error:
             log.exception("Database notifications interrupted")
             await asyncio.sleep(1)
@@ -94,12 +101,15 @@ async def listen() -> None:
 
 async def update() -> None:
     heartbeat_at = monotonic()
+
     while True:
         try:
+            timeout = max(0, heartbeat_at - monotonic())
             try:
-                await asyncio.wait_for(changed.wait(), timeout = max(0, heartbeat_at - monotonic()))
+                await asyncio.wait_for(changed.wait(), timeout = timeout)
             except TimeoutError:
                 pass
+
             changed.clear()
             users = pending.copy()
             pending.clear()
@@ -113,6 +123,7 @@ async def update() -> None:
             # Reconcile on heartbeat too: notifications are not stored history.
             sids = [sid for sid, user in clients.items() if user in users]
             await refresh(sids)
+
         except (psycopg.Error, PoolTimeout):
             log.exception("Could not refresh connected players")
             await asyncio.sleep(1)
@@ -121,33 +132,45 @@ async def update() -> None:
 
 async def startup() -> None:
     await run_in_threadpool(db.initialize)
-    tasks.extend([asyncio.create_task(listen()), asyncio.create_task(update())])
+    tasks.extend([
+        asyncio.create_task(listen()),
+        asyncio.create_task(update()),
+    ])
 
 
 async def shutdown() -> None:
     for task in tasks:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions = True)
+
     try:
         if clients:
             await run_in_threadpool(room.disconnect, list(clients))
     except (psycopg.Error, PoolTimeout):
         log.exception("Could not release connections; their leases will expire")
+
     await sio.shutdown()
     await run_in_threadpool(db.pool.close)
 
 
-app = ASGIApp(sio, api, socketio_path = "api/socket.io", on_startup = startup, on_shutdown = shutdown)
+app = ASGIApp(
+    sio, api,
+    socketio_path = "api/socket.io",
+    on_startup    = startup,
+    on_shutdown   = shutdown,
+)
 
 
 @api.get("/api/health")
 async def health() -> Health:
     if any(task.done() for task in tasks):
         raise HTTPException(503, "Connection updates unavailable.")
+
     try:
         await run_in_threadpool(db.check)
     except (psycopg.Error, PoolTimeout):
         raise HTTPException(503, "Database unavailable.") from None
+
     return Health(status = "ok")
 
 
@@ -155,7 +178,10 @@ async def health() -> Health:
 async def connect(sid, environ, auth):
     try:
         auth = Auth.model_validate(auth or {})
-        user_id = await run_in_threadpool(room.connect, sid, account.session_key(auth.token), auth.id)
+        key  = account.session_key(auth.token)
+
+        user_id = await run_in_threadpool(room.connect, sid, key, auth.id)
+
     except ValidationError:
         raise ConnectionRefusedError("Invalid session or room.") from None
     except HTTPException as error:
@@ -169,9 +195,11 @@ async def connect(sid, environ, auth):
 
 async def act(sid, data, model, action) -> dict:
     error = None
+
     try:
         message = model.model_validate(data)
         await run_in_threadpool(action, sid, message)
+
     except ValidationError:
         error = "Invalid request format."
     except InvalidAction as rejection:

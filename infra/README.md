@@ -13,8 +13,8 @@ AWS commands. CloudFormation manages resources; ECS starts and replaces containe
 | [backend/smoke.py](backend/smoke.py) | HTTP health and Engine.IO WebSocket handshake |
 
 The templates manage existing production resources. Preserve their logical IDs.
-The database, its credentials and deployment users predate CloudFormation; this
-is not an installer for an empty account.
+Database credentials and deployment users are managed outside these templates.
+Deployments require the existing stacks and their resource parameters.
 
 Read a workflow first, then its script, then the template it deploys. Each script
 runs from top to bottom; there is no shared deployment framework. Commands run from
@@ -72,13 +72,10 @@ template with the stack's existing parameters. An unchanged template succeeds
 without an update; other AWS errors fail the run. CloudFormation handles rollback
 when an update fails. Deployment includes no separate change-set review.
 
-The deployment user needs `cloudformation:GetTemplateSummary` for this command.
-An operator must apply the [bootstrap permissions](bootstrap/README.md) before
-using this workflow for the first time after switching to `deploy`.
-
 The existing infrastructure role is limited to updates of allowlisted resources.
 Resource additions and IAM changes may require an operator with the appropriate
-permissions. The database stack policy blocks replacement and removal; deletion
+permissions; see [bootstrap](bootstrap/README.md) to update them.
+The database stack policy blocks replacement and removal; deletion
 protection and retention settings remain in the template.
 
 Infrastructure and backend releases share a deployment concurrency group, but run

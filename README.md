@@ -92,22 +92,4 @@ run independently: deploy required infrastructure before releasing the app. Fron
 changes use the existing Pages workflow.
 
 See [infrastructure operations](infra/README.md) for credentials, deployment,
-rollback, capacity, data protection, and the existing-resource adoption boundary.
-
-## Move the existing SQLite accounts
-
-For the first transition, schedule a short maintenance window: the previous
-backend uses local state and a different socket message format. Stop it, retain
-the `chess-data` volume, and copy its `chess.sqlite` file to a backup. Import that
-backup into an empty destination database from a machine that can reach it:
-
-```sh
-export CHESS_DATABASE_URL='postgresql://...'
-uv run --directory apps/backend python -m app.import_sqlite /absolute/path/chess.sqlite
-```
-
-The importer preserves user IDs, password hashes, avatars and unexpired login
-tokens. It opens the backup read-only and refuses to overwrite existing accounts.
-The old version never saved ongoing games, so those cannot be imported. Deploy the
-new backend and frontend together, then reopen traffic. Keep the old volume until
-the imported accounts and new deployment have been checked.
+rollback, capacity and data protection.

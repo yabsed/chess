@@ -103,7 +103,7 @@ Resources:
           StopTimeout: 30
 
 
-  # Preserve one replica during adoption. More replicas also need more deployment capacity.
+  # More replicas also need more host capacity during rolling deployments.
   Service:
     Type: AWS::ECS::Service
 

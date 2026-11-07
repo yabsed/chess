@@ -6,22 +6,30 @@ resources. Normal application and infrastructure workflows do not update this st
 
 ## Update permissions
 
-Apply this stack before using the Infrastructure workflow: it grants the
-`cloudformation:GetTemplateSummary` permission needed by `aws cloudformation deploy`.
-
-Existing parameter values are reused only for parameters already present in the
-deployed stack. The original access template had only `FoundationStack`; upgrading
-it requires the other ten values from its existing resource allowlist once.
-
-Use an authenticated operator session with AWS CLI v2 and jq. The foundation's
-`Bootstrap*` outputs supply the existing resource identities after a foundation
-template containing those outputs has been deployed. Older foundations do not
-have them; use the resource values in their deployed access template for the first
-upgrade. From the repository root, with `AWS_DEFAULT_REGION` and `FOUNDATION_STACK`
-set:
+From the repository root, use an operator session with AWS CLI v2. Set
+`AWS_DEFAULT_REGION` to the stack's region (`ap-southeast-2` for production).
+The deployed stack already stores its resource parameters; this command reuses them.
 
 ```sh
 aws sts get-caller-identity
+
+aws cloudformation deploy \
+  --stack-name chess-deployment-access \
+  --template-file infra/bootstrap/access.yaml \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --no-disable-rollback \
+  --no-fail-on-empty-changeset
+```
+
+Check the account before deploying. The command waits for completion.
+
+## Change resource scopes
+
+When resource identities change, update the stack's parameters too. The deployed
+foundation template must expose the `Bootstrap*` outputs declared in this repo.
+With `FOUNDATION_STACK` set, use jq to collect them:
+
+```sh
 umask 077
 
 aws cloudformation describe-stacks \
@@ -39,21 +47,10 @@ aws cloudformation describe-stacks \
 ```
 
 Review the generated parameters against `access.yaml`: check the account, region and
-complete resource list. Keep the exact resource scopes rather than replacing them
-with wildcards. Then deploy:
-
-```sh
-aws cloudformation deploy \
-  --stack-name chess-deployment-access \
-  --template-file infra/bootstrap/access.yaml \
-  --parameter-overrides file:///tmp/chess-access-parameters.json \
-  --capabilities CAPABILITY_NAMED_IAM \
-  --no-disable-rollback \
-  --no-fail-on-empty-changeset
-```
-
-The command waits for completion. If foundation resource identities change later,
-regenerate these parameters from its outputs and deploy the access stack again.
+complete resource list. Add
+`--parameter-overrides file:///tmp/chess-access-parameters.json` to the deployment
+command above. Keep exact resource scopes instead of wildcards. Adding a resource
+may also require an operator to grant access before the foundation deployment.
 
 ## Credentials
 
