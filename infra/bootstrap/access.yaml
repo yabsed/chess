@@ -52,6 +52,58 @@ Parameters:
     Type: AWS::EC2::Subnet::Id
 
 Resources:
+  # GitHub may plan and apply foundation through its dedicated execution role.
+  # The API-only user is created once with IAM; its key stays in GitHub Secrets.
+  InfrastructureUserPolicy:
+    Type: AWS::IAM::UserPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      UserName: chess-github-infra
+      PolicyName: chess-foundation-deploy
+
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: InspectAndApplyFoundation
+            Effect: Allow
+            Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${FoundationStack}/*'
+            Action:
+              - cloudformation:DescribeStacks
+              - cloudformation:GetTemplate
+              - cloudformation:DescribeChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:SetStackPolicy
+              - cloudformation:TagResource
+              - cloudformation:UntagResource
+
+          # DescribeEvents fails with a change-set ARN resource scope in this account.
+          # Limit this metadata-only read to the deployment region.
+          - Sid: InspectValidation
+            Effect: Allow
+            Resource: '*'
+            Action: cloudformation:DescribeEvents
+            Condition:
+              StringEquals:
+                aws:RequestedRegion: !Ref AWS::Region
+
+          - Sid: PlanWithFoundationRole
+            Effect: Allow
+            Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${FoundationStack}/*'
+            Action: cloudformation:CreateChangeSet
+            Condition:
+              StringEquals:
+                cloudformation:RoleArn: !GetAtt FoundationRole.Arn
+
+          - Sid: PassFoundationRole
+            Effect: Allow
+            Resource: !GetAtt FoundationRole.Arn
+            Action: iam:PassRole
+            Condition:
+              StringEquals:
+                iam:PassedToService: cloudformation.amazonaws.com
+
   # CloudFormation can update these resources, but cannot rewrite IAM permissions.
   FoundationRole:
     Type: AWS::IAM::Role
@@ -60,13 +112,14 @@ Resources:
     Properties:
       RoleName: chess-foundation-cloudformation
       Description: CloudFormation updates to the existing chess foundation resource allowlist.
+
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
-            Principal:
-              Service: cloudformation.amazonaws.com
+            Principal: {Service: cloudformation.amazonaws.com}
             Action: sts:AssumeRole
+
       Policies:
         - PolicyName: foundation
           PolicyDocument:
@@ -74,6 +127,7 @@ Resources:
             Statement:
               - Sid: InspectResources
                 Effect: Allow
+                Resource: '*'
                 Action:
                   - autoscaling:DescribeAutoScalingGroups
                   - autoscaling:DescribeAutoScalingInstances
@@ -127,10 +181,11 @@ Resources:
 
                   - rds:DescribeDBEngineVersions
                   - rds:DescribeEvents
-                Resource: '*'
 
               - Sid: AutoScaling
                 Effect: Allow
+                Resource:
+                  - !Ref AutoScalingGroupArn
                 Action:
                   - autoscaling:AttachLoadBalancerTargetGroups
                   - autoscaling:AttachLoadBalancers
@@ -148,11 +203,10 @@ Resources:
                   - autoscaling:ResumeProcesses
                   - autoscaling:StartInstanceRefresh
                   - autoscaling:SuspendProcesses
-                Resource:
-                  - !Ref AutoScalingGroupArn
 
               - Sid: CloudFront
                 Effect: Allow
+                Resource: !Ref CloudFrontResources
                 Action:
                   - cloudfront:GetDistribution
                   - cloudfront:GetDistributionConfig
@@ -163,10 +217,10 @@ Resources:
                   - cloudfront:UpdateDistribution
                   - cloudfront:UpdateDistributionWithStagingConfig
                   - cloudfront:UpdateVpcOrigin
-                Resource: !Ref CloudFrontResources
 
               - Sid: Network
                 Effect: Allow
+                Resource: !Ref NetworkResources
                 Action:
                   - ec2:AssignPrivateNatGatewayAddress
                   - ec2:AssociateAddress
@@ -195,10 +249,11 @@ Resources:
                   - ec2:UnassignPrivateNatGatewayAddress
                   - ec2:UpdateSecurityGroupRuleDescriptionsEgress
                   - ec2:UpdateSecurityGroupRuleDescriptionsIngress
-                Resource: !Ref NetworkResources
 
               - Sid: Images
                 Effect: Allow
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/chess-backend'
                 Action:
                   - ecr:DeleteLifecyclePolicy
                   - ecr:DeleteRepositoryPolicy
@@ -212,11 +267,12 @@ Resources:
                   - ecr:SetRepositoryPolicy
                   - ecr:TagResource
                   - ecr:UntagResource
-                Resource:
-                  - !Sub 'arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/chess-backend'
 
               - Sid: Cluster
                 Effect: Allow
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:capacity-provider/${CapacityProviderName}'
+                  - !Sub 'arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:cluster/chess'
                 Action:
                   - ecs:DescribeCapacityProviders
                   - ecs:DescribeClusters
@@ -227,12 +283,10 @@ Resources:
                   - ecs:UpdateCapacityProvider
                   - ecs:UpdateCluster
                   - ecs:UpdateClusterSettings
-                Resource:
-                  - !Sub 'arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:capacity-provider/${CapacityProviderName}'
-                  - !Sub 'arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:cluster/chess'
 
               - Sid: LoadBalancer
                 Effect: Allow
+                Resource: !Ref LoadBalancerResources
                 Action:
                   - elasticloadbalancing:AddTags
                   - elasticloadbalancing:DeregisterTargets
@@ -248,10 +302,15 @@ Resources:
                   - elasticloadbalancing:SetIpAddressType
                   - elasticloadbalancing:SetSecurityGroups
                   - elasticloadbalancing:SetSubnets
-                Resource: !Ref LoadBalancerResources
 
               - Sid: InspectRoles
                 Effect: Allow
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/chess-ecs-instance'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/chess-backend-cloudformation'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/chess-ecs-execution'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/chess-ecs-instance'
+                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:user/chess-github-deploy'
                 Action:
                   - iam:GetInstanceProfile
                   - iam:GetRole
@@ -259,15 +318,12 @@ Resources:
                   - iam:GetUserPolicy
                   - iam:ListAttachedRolePolicies
                   - iam:ListRolePolicies
-                Resource:
-                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/chess-ecs-instance'
-                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/chess-backend-cloudformation'
-                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/chess-ecs-execution'
-                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/chess-ecs-instance'
-                  - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:user/chess-github-deploy'
 
               - Sid: Logs
                 Effect: Allow
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/chess'
+                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/chess:*'
                 Action:
                   - logs:DeleteRetentionPolicy
                   - logs:GetDataProtectionPolicy
@@ -276,12 +332,12 @@ Resources:
                   - logs:PutRetentionPolicy
                   - logs:TagResource
                   - logs:UntagResource
-                Resource:
-                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/chess'
-                  - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/chess:*'
 
               - Sid: Database
                 Effect: Allow
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:rds:${AWS::Region}:${AWS::AccountId}:db:chess-db'
+                  - !Sub 'arn:${AWS::Partition}:rds:${AWS::Region}:${AWS::AccountId}:subgrp:chess-db-subnets'
                 Action:
                   - rds:AddTagsToResource
                   - rds:DescribeDBClusters
@@ -294,32 +350,28 @@ Resources:
                   - rds:ModifyDBSubnetGroup
                   - rds:RebootDBInstance
                   - rds:RemoveTagsFromResource
-                Resource:
-                  - !Sub 'arn:${AWS::Partition}:rds:${AWS::Region}:${AWS::AccountId}:db:chess-db'
-                  - !Sub 'arn:${AWS::Partition}:rds:${AWS::Region}:${AWS::AccountId}:subgrp:chess-db-subnets'
 
               - Sid: DatabaseSecret
                 Effect: Allow
+                Resource:
+                  - !Ref DatabaseSecretArn
                 Action:
                   - secretsmanager:DescribeSecret
                   - secretsmanager:GetSecretValue
                   - secretsmanager:TagResource
                   - secretsmanager:UntagResource
                   - secretsmanager:UpdateSecret
-                Resource:
-                  - !Ref DatabaseSecretArn
 
               - Sid: UpdatePinnedCompute
                 Effect: Allow
-                Action: autoscaling:UpdateAutoScalingGroup
                 Resource: !Ref AutoScalingGroupArn
+                Action: autoscaling:UpdateAutoScalingGroup
                 Condition:
                   Bool:
                     autoscaling:LaunchTemplateVersionSpecified: 'true'
 
               - Sid: LaunchFoundationCompute
                 Effect: Allow
-                Action: ec2:RunInstances
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*'
                   - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*'
@@ -329,67 +381,18 @@ Resources:
                   - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/${BackendSecurityGroupId}'
                   - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${PrivateSubnetA}'
                   - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${PrivateSubnetB}'
+                Action: ec2:RunInstances
                 Condition:
                   ArnEquals:
                     ec2:LaunchTemplate: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:launch-template/${LaunchTemplateId}'
 
               - Sid: PassInstanceRole
                 Effect: Allow
-                Action: iam:PassRole
                 Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/chess-ecs-instance'
+                Action: iam:PassRole
                 Condition:
                   StringEquals:
                     iam:PassedToService: ec2.amazonaws.com
-
-  # The API-only user is created once with IAM; its key stays in GitHub Secrets.
-  InfrastructureUserPolicy:
-    Type: AWS::IAM::UserPolicy
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      UserName: chess-github-infra
-      PolicyName: chess-foundation-deploy
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Sid: InspectAndApplyFoundation
-            Effect: Allow
-            Action:
-              - cloudformation:DescribeStacks
-              - cloudformation:GetTemplate
-              - cloudformation:DescribeChangeSet
-              - cloudformation:ExecuteChangeSet
-              - cloudformation:DeleteChangeSet
-              - cloudformation:SetStackPolicy
-              - cloudformation:TagResource
-              - cloudformation:UntagResource
-            Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${FoundationStack}/*'
-
-          # DescribeEvents fails with a change-set ARN resource scope in this account.
-          # Limit this metadata-only read to the deployment region.
-          - Sid: InspectValidation
-            Effect: Allow
-            Action: cloudformation:DescribeEvents
-            Resource: '*'
-            Condition:
-              StringEquals:
-                aws:RequestedRegion: !Ref AWS::Region
-
-          - Sid: PlanWithFoundationRole
-            Effect: Allow
-            Action: cloudformation:CreateChangeSet
-            Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${FoundationStack}/*'
-            Condition:
-              StringEquals:
-                cloudformation:RoleArn: !GetAtt FoundationRole.Arn
-
-          - Sid: PassFoundationRole
-            Effect: Allow
-            Action: iam:PassRole
-            Resource: !GetAtt FoundationRole.Arn
-            Condition:
-              StringEquals:
-                iam:PassedToService: cloudformation.amazonaws.com
 
 Outputs:
   FoundationRoleArn:

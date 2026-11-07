@@ -1,129 +1,130 @@
-"""Read the existing foundation and print parameters for bootstrap/access.yaml."""
+"""Read reviewed foundation outputs as inputs for bootstrap/access.yaml."""
 
 import json
 import os
 import re
-import subprocess
+import sys
+from pathlib import Path
+
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
+
+from infra.templates import comparable_template
 
 
-def parameters():
-    required = ('AWS_REGION', 'AWS_ACCOUNT_ID', 'FOUNDATION_STACK')
-    missing = [name for name in required if not os.environ.get(name)]
-    if missing:
-        raise ValueError(f'Missing deployment settings: {", ".join(missing)}')
-    region, account, stack = (os.environ[name] for name in required)
+FOUNDATION = Path(__file__).parents[1] / "foundation/template.yaml"
+ACCESS     = Path(__file__).with_name("access.yaml")
 
-    def aws(*args):
-        result = subprocess.run(
-            ['aws', *args, '--region', region, '--output', 'json', '--no-cli-pager'],
-            check=True, capture_output=True, text=True,
-        )
-        return json.loads(result.stdout)
 
-    identity = aws('sts', 'get-caller-identity')
-    if identity['Account'] != account:
-        raise ValueError('Authenticated AWS account does not match AWS_ACCOUNT_ID.')
-    partition = identity['Arn'].split(':')[1]
+def prepare_access_parameters(session, stack_name, expected_account):
+    identity = session.client("sts").get_caller_identity()
+    account = identity["Account"]
+    if account != expected_account:
+        raise ValueError("Authenticated AWS account does not match AWS_ACCOUNT_ID.")
 
-    response = aws('cloudformation', 'list-stack-resources', '--stack-name', stack)
-    resources = {row['LogicalResourceId']: row for row in response['StackResourceSummaries']}
+    partition = identity["Arn"].split(":")[1]
+    region = session.region_name
 
-    def physical(logical_id, resource_type):
-        row = resources.get(logical_id, {})
-        value = row.get('PhysicalResourceId', '')
-        if row.get('ResourceType') != f'AWS::{resource_type}' or not re.fullmatch(
-            r'[A-Za-z0-9:/_.+=@-]+', value
-        ):
-            raise ValueError(f'Missing or unexpected foundation resource: {logical_id}')
-        return value
+    # Reviewed foundation
+    cloudformation = session.client("cloudformation")
+    response = cloudformation.describe_stacks(StackName=stack_name)
+    stack = response["Stacks"][0]
 
-    def arn(service, resource, global_service=False):
-        scope = '' if global_service else region
-        return f'arn:{partition}:{service}:{scope}:{account}:{resource}'
+    if stack["StackStatus"] not in {"CREATE_COMPLETE", "UPDATE_COMPLETE", "IMPORT_COMPLETE"}:
+        raise ValueError("Wait for a successful foundation deployment before preparing permissions.")
 
-    def checked_arn(value, service):
-        if not value.startswith(arn(service, '')) or not re.fullmatch(
-            r'[A-Za-z0-9:/_.+=@-]+', value
-        ):
-            raise ValueError(f'Unexpected {service} resource ARN.')
-        return value
+    stack_prefix = f"arn:{partition}:cloudformation:{region}:{account}:stack/{stack_name}/"
+    if not stack["StackId"].startswith(stack_prefix):
+        raise ValueError("Foundation stack does not match the requested account, region and name.")
 
-    # Only these logical IDs may enter the network update allowlist.
-    network = (
-        ('InternetGateway', 'InternetGateway', 'internet-gateway'),
-        ('ECSLaunchTemplate', 'LaunchTemplate', 'launch-template'),
-        ('NatGateway', 'NatGateway', 'natgateway'),
-        ('PublicRoutes', 'RouteTable', 'route-table'),
-        ('PrivateRoutesA', 'RouteTable', 'route-table'),
-        ('PrivateRoutesB', 'RouteTable', 'route-table'),
-        ('LoadBalancerSecurityGroup', 'SecurityGroup', 'security-group'),
-        ('BackendSecurityGroup', 'SecurityGroup', 'security-group'),
-        ('DatabaseSecurityGroup', 'SecurityGroup', 'security-group'),
-        ('PublicSubnetA', 'Subnet', 'subnet'),
-        ('PublicSubnetB', 'Subnet', 'subnet'),
-        ('PrivateSubnetA', 'Subnet', 'subnet'),
-        ('PrivateSubnetB', 'Subnet', 'subnet'),
-        ('S3Endpoint', 'VPCEndpoint', 'vpc-endpoint'),
-        ('VPC', 'VPC', 'vpc'),
+    applied = cloudformation.get_template(
+        StackName     = stack["StackId"],
+        TemplateStage = "Original",
     )
-    network_arns = []
-    for logical_id, resource_type, arn_type in network:
-        resource_id = physical(logical_id, f'EC2::{resource_type}')
-        network_arns.append(arn('ec2', f'{arn_type}/{resource_id}'))
+    expected = comparable_template(FOUNDATION.read_text())
+    if comparable_template(applied["TemplateBody"]) != expected:
+        raise ValueError("Apply the reviewed foundation template before preparing bootstrap permissions.")
 
-    # CloudFormation records the EIP address, while IAM needs its allocation ID.
-    public_ip = physical('NatAddress', 'EC2::EIP')
-    addresses = aws('ec2', 'describe-addresses', '--public-ips', public_ip)['Addresses']
-    if len(addresses) != 1 or addresses[0].get('PublicIp') != public_ip:
-        raise ValueError('Could not resolve the foundation NAT address.')
-    allocation_id = addresses[0].get('AllocationId', '')
-    if not re.fullmatch(r'eipalloc-[a-f0-9]+', allocation_id):
-        raise ValueError('Missing NAT address allocation ID.')
-    network_arns.append(arn('ec2', f'elastic-ip/{allocation_id}'))
+    # Do not pair outputs from one deployment with a template from another.
+    confirmed = cloudformation.describe_stacks(StackName=stack["StackId"])["Stacks"][0]
+    for field in (
+        "StackId", "StackStatus",
+        "CreationTime", "LastUpdatedTime",
+        "Parameters", "Outputs",
+    ):
+        if confirmed.get(field) != stack.get(field):
+            raise ValueError("Foundation changed while reading it. Retry after deployment completes.")
 
-    # Its generated UUID is part of the ARN and cannot be derived from the name.
-    group_name = physical('ECSAutoScalingGroup', 'AutoScaling::AutoScalingGroup')
-    groups = aws(
-        'autoscaling', 'describe-auto-scaling-groups', '--auto-scaling-group-names', group_name,
-    )
-    groups = groups['AutoScalingGroups']
-    if len(groups) != 1 or groups[0].get('AutoScalingGroupName') != group_name:
-        raise ValueError('Could not resolve the foundation Auto Scaling group.')
-    group_arn = checked_arn(groups[0]['AutoScalingGroupARN'], 'autoscaling')
-    if not group_arn.endswith(f':autoScalingGroupName/{group_name}'):
-        raise ValueError('Auto Scaling group ARN does not match its name.')
+    # Bootstrap inputs
+    outputs = {item["OutputKey"]: item["OutputValue"] for item in stack.get("Outputs", [])}
+    definitions = comparable_template(ACCESS.read_text())["Parameters"]
+    result = []
 
-    distribution = physical('ApiDistribution', 'CloudFront::Distribution')
-    origin = physical('ApiOrigin', 'CloudFront::VpcOrigin')
-    load_balancers = [
-        checked_arn(
-            physical(name, f'ElasticLoadBalancingV2::{name}'), 'elasticloadbalancing',
-        )
-        for name in ('Listener', 'LoadBalancer', 'TargetGroup')
-    ]
-    secret = checked_arn(physical('DatabaseUrl', 'SecretsManager::Secret'), 'secretsmanager')
+    for name, definition in definitions.items():
+        value = outputs.get(f"Bootstrap{name}")
+        if not value:
+            raise ValueError(f"Missing Bootstrap{name} output. Apply the foundation template first.")
 
-    values = {
-        'FoundationStack': stack,
-        'AutoScalingGroupArn': group_arn,
-        'CloudFrontResources': ','.join([
-            arn('cloudfront', f'distribution/{distribution}', global_service=True),
-            arn('cloudfront', f'vpcorigin/{origin}', global_service=True),
-        ]),
-        'NetworkResources': ','.join(sorted(network_arns)),
-        'CapacityProviderName': physical('AsgCapacityProvider', 'ECS::CapacityProvider'),
-        'LoadBalancerResources': ','.join(load_balancers),
-        'DatabaseSecretArn': secret,
-        'LaunchTemplateId': physical('ECSLaunchTemplate', 'EC2::LaunchTemplate'),
-        'BackendSecurityGroupId': physical('BackendSecurityGroup', 'EC2::SecurityGroup'),
-        'PrivateSubnetA': physical('PrivateSubnetA', 'EC2::Subnet'),
-        'PrivateSubnetB': physical('PrivateSubnetB', 'EC2::Subnet'),
+        check_parameter(name, value, definition, partition, region, account)
+
+        if name == "FoundationStack" and value != stack_name:
+            raise ValueError("BootstrapFoundationStack does not match the requested foundation.")
+
+        if name == "NetworkResources":
+            value = ",".join(sorted(value.split(",")))
+
+        result.append({"ParameterKey": name, "ParameterValue": value})
+
+    return result
+
+
+def check_parameter(name, value, definition, partition, region, account):
+    # Reuse the destination's schema; native EC2 parameter types need local patterns.
+    id_patterns = {
+        "AWS::EC2::SecurityGroup::Id": r"sg-[a-f0-9]+",
+        "AWS::EC2::Subnet::Id":        r"subnet-[a-f0-9]+",
     }
-    return [{'ParameterKey': key, 'ParameterValue': value} for key, value in values.items()]
+    pattern = definition.get("AllowedPattern") or id_patterns[definition["Type"]]
+    values = value.split(",") if definition["Type"] == "CommaDelimitedList" else [value]
+
+    for item in values:
+        if not re.fullmatch(pattern, item):
+            raise ValueError(f"Invalid bootstrap parameter: {name}.")
+
+        if not item.startswith("arn:"):
+            continue
+
+        _, actual_partition, service, actual_region, actual_account, _ = item.split(":", 5)
+        if actual_partition != partition:
+            raise ValueError(f"Bootstrap parameter belongs to another AWS partition: {name}.")
+
+        if actual_account != account:
+            raise ValueError(f"Bootstrap parameter belongs to another AWS account: {name}.")
+
+        expected_region = "" if service == "cloudfront" else region
+        if actual_region != expected_region:
+            raise ValueError(f"Bootstrap parameter belongs to another AWS region: {name}.")
 
 
-if __name__ == '__main__':
+def main():
     try:
-        print(json.dumps(parameters(), indent=2))
-    except (KeyError, ValueError, OSError, subprocess.CalledProcessError) as error:
-        raise SystemExit(str(error))
+        required = ("AWS_REGION", "AWS_ACCOUNT_ID", "FOUNDATION_STACK")
+        missing = [name for name in required if not os.environ.get(name)]
+        if missing:
+            raise ValueError(f"Missing deployment settings: {', '.join(missing)}")
+
+        session = boto3.Session(region_name=os.environ["AWS_REGION"])
+        values = prepare_access_parameters(
+            session,
+            stack_name       = os.environ["FOUNDATION_STACK"],
+            expected_account = os.environ["AWS_ACCOUNT_ID"],
+        )
+        print(json.dumps(values, indent=2))
+        return 0
+    except (BotoCoreError, ClientError, KeyError, OSError, ValueError) as error:
+        print(f"Could not prepare bootstrap permissions: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

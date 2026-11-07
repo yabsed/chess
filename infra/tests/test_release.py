@@ -11,6 +11,7 @@ from unittest.mock import Mock, call, patch
 from botocore.exceptions import ClientError
 
 from infra.backend import release
+from infra.backend.smoke import SmokeError
 from infra.backend.verify import VerificationError
 
 
@@ -86,7 +87,8 @@ class ReleaseTests(unittest.TestCase):
 
         self.create_session = patch.object(release.boto3, "Session", return_value=self.session).start()
         self.verify = patch.object(release, "verify_service").start()
-        self.run = patch.object(release.subprocess, "run", side_effect=self.run_command).start()
+        self.check_endpoint = patch.object(release, "check_endpoint").start()
+        self.mock_run = patch.object(release.subprocess, "run", side_effect=self.run_command).start()
         patch.object(release.subprocess, "check_output", return_value="commit\n").start()
 
     def describe_stack(self, *, StackName):
@@ -160,20 +162,34 @@ class ReleaseTests(unittest.TestCase):
             f"{key}={value}" for key, value in self.previous_parameters.items()
         ])
         self.assertEqual(self.verify.call_args_list, [
-            call(self.ecs, "chess", "backend-service", "new-task", NEW_IMAGE),
-            call(self.ecs, "chess", "backend-service", "previous-task", PREVIOUS_IMAGE),
+            call(
+                self.ecs, cluster="chess", service="backend-service",
+                task_definition="new-task", image_uri=NEW_IMAGE,
+            ),
+            call(
+                self.ecs, cluster="chess", service="backend-service",
+                task_definition="previous-task", image_uri=PREVIOUS_IMAGE,
+            ),
         ])
+        for deployment in self.deployments:
+            command = deployment["command"]
+            template = Path(command[command.index("--template-file") + 1])
+            self.assertFalse(template.exists())
 
     def test_successful_release_verifies_expected_image(self):
         self.assertEqual(self.main("--digest", NEW_IMAGE), 0)
 
         self.assertEqual(len(self.deployments), 1)
+        backend_template = Path(release.__file__).with_name("template.yaml").read_text()
+        self.assertEqual(self.deployments[0]["template"], backend_template)
         self.assertEqual(self.deployments[0]["parameters"], [
             "FoundationStack=chess-foundation", f"ImageUri={NEW_IMAGE}",
         ])
         self.verify.assert_called_once_with(
-            self.ecs, "chess", "backend-service", "new-task", NEW_IMAGE,
+            self.ecs, cluster="chess", service="backend-service",
+            task_definition="new-task", image_uri=NEW_IMAGE,
         )
+        self.check_endpoint.assert_called_once_with("https://api.example.test")
         self.ecr.get_authorization_token.assert_not_called()
         self.assertIn(NEW_IMAGE, self.stdout.getvalue())
 
@@ -191,22 +207,12 @@ class ReleaseTests(unittest.TestCase):
         self.assert_restored()
         self.assertIn("restored and verified", self.stderr.getvalue())
 
-    def test_http_failure_restores_full_release_and_still_fails(self):
-        original_run = self.run_command
-        smoke_attempts = []
-
-        def fail_first_smoke(command, **options):
-            if command[:2] == ["bash", "infra/backend/smoke.sh"]:
-                smoke_attempts.append(command)
-                if len(smoke_attempts) == 1:
-                    raise subprocess.CalledProcessError(22, command)
-            return original_run(command, **options)
-
-        self.run.side_effect = fail_first_smoke
+    def test_endpoint_failure_restores_full_release_and_still_fails(self):
+        self.check_endpoint.side_effect = [SmokeError("WebSocket handshake failed"), None]
 
         self.assertEqual(self.main("--digest", NEW_IMAGE), 1)
         self.assert_restored()
-        self.assertEqual(len(smoke_attempts), 2)
+        self.assertEqual(self.check_endpoint.call_count, 2)
 
     def test_sdk_verification_failure_also_restores(self):
         error = ClientError({"Error": {"Code": "AccessDenied", "Message": "Denied"}}, "DescribeTasks")
@@ -229,6 +235,49 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(self.main("--digest", NEW_IMAGE), 1)
         self.assertEqual(len(self.deployments), 1)
         self.verify.assert_not_called()
+        command = self.deployments[0]["command"]
+        template = Path(command[command.index("--template-file") + 1])
+        self.assertFalse(template.exists())
+
+    def test_failed_restoration_stops_without_reporting_success(self):
+        self.verify.side_effect = VerificationError("Wrong running digest")
+        original_run = self.run_command
+
+        def fail_restore(command, **options):
+            result = original_run(command, **options)
+            if command[:3] == ["aws", "cloudformation", "deploy"] and len(self.deployments) == 2:
+                raise subprocess.CalledProcessError(1, command)
+            return result
+
+        self.mock_run.side_effect = fail_restore
+
+        self.assertEqual(self.main("--digest", NEW_IMAGE), 1)
+        self.assertEqual(len(self.deployments), 2)
+        self.verify.assert_called_once()
+        self.assertNotIn("restored and verified", self.stderr.getvalue())
+
+    def test_unhealthy_restoration_still_fails_without_another_restore(self):
+        self.verify.side_effect = [
+            VerificationError("New release is unhealthy"),
+            VerificationError("Previous release is unhealthy"),
+        ]
+
+        self.assertEqual(self.main("--digest", NEW_IMAGE), 1)
+        self.assert_restored()
+        self.assertIn("Previous release is unhealthy", self.stderr.getvalue())
+        self.assertNotIn("restored and verified", self.stderr.getvalue())
+
+    def test_successful_restoration_preserves_the_original_failure(self):
+        failure = VerificationError("Original verification failure")
+        self.verify.side_effect = [failure, None]
+
+        with self.assertRaises(VerificationError) as caught:
+            release.release(
+                self.session, "chess-foundation", "chess-backend", None, NEW_IMAGE,
+            )
+
+        self.assertIs(caught.exception, failure)
+        self.assert_restored()
 
     def test_output_lookup_failure_does_not_enter_restore_path(self):
         self.deployed_read_error = ClientError({"Error": {
@@ -282,14 +331,14 @@ class ReleaseTests(unittest.TestCase):
         self.cloudformation.get_template.return_value = {"TemplateBody": {"Resources": {}}}
 
         self.assertEqual(self.main("local-image"), 1)
-        self.run.assert_not_called()
+        self.mock_run.assert_not_called()
         self.ecr.get_authorization_token.assert_not_called()
 
     def test_wrong_target_stops_before_publishing(self):
         os.environ["BACKEND_STACK"] = "other-backend"
 
         self.assertEqual(self.main("local-image"), 1)
-        self.run.assert_not_called()
+        self.mock_run.assert_not_called()
         self.ecr.get_authorization_token.assert_not_called()
 
     def test_wrong_account_stops_before_reading_or_publishing(self):
@@ -297,7 +346,7 @@ class ReleaseTests(unittest.TestCase):
 
         self.assertEqual(self.main("local-image"), 1)
         self.cloudformation.describe_stacks.assert_not_called()
-        self.run.assert_not_called()
+        self.mock_run.assert_not_called()
 
     def test_missing_github_key_stops_before_creating_a_session(self):
         del os.environ["AWS_SECRET_ACCESS_KEY"]
@@ -315,7 +364,7 @@ class ReleaseTests(unittest.TestCase):
     def test_publish_uses_password_stdin_and_cleans_docker_credentials(self):
         self.assertEqual(self.main("local-image"), 0)
 
-        docker_calls = [entry for entry in self.run.call_args_list if entry.args[0][0] == "docker"]
+        docker_calls = [entry for entry in self.mock_run.call_args_list if entry.args[0][0] == "docker"]
         login = docker_calls[0]
         self.assertEqual(login.args[0], [
             "docker", "login", "--username", "AWS", "--password-stdin", REPOSITORY.split("/")[0],

@@ -21,9 +21,9 @@ from infra.foundation import deploy
 ACCOUNT = "123456789012"
 STACK_NAME = "foundation-test"
 STACK_ID = f"arn:aws:cloudformation:ap-southeast-2:{ACCOUNT}:stack/{STACK_NAME}/stack-id"
-CHANGE_SET = f"arn:aws:cloudformation:ap-southeast-2:{ACCOUNT}:changeSet/reviewed-plan/change-id"
+CHANGE_SET_ARN = f"arn:aws:cloudformation:ap-southeast-2:{ACCOUNT}:changeSet/reviewed-plan/change-id"
 ROLE = f"arn:aws:iam::{ACCOUNT}:role/foundation-role"
-DESCRIPTION = "commit=reviewed-commit template=reviewed-template"
+REVISION = "commit=reviewed-commit template=reviewed-template"
 TEMPLATE = "Resources: {}"
 NO_CHANGES = "The submitted information didn't contain changes. Submit different information to create a change set."
 
@@ -41,9 +41,9 @@ def resource_change(**fields):
 
 def reviewed_plan(**fields):
     plan = {
-        "ChangeSetId": CHANGE_SET,
+        "ChangeSetId": CHANGE_SET_ARN,
         "StackId": STACK_ID,
-        "Description": DESCRIPTION,
+        "Description": REVISION,
         "Status": "CREATE_COMPLETE",
         "ExecutionStatus": "AVAILABLE",
         "Changes": [resource_change()],
@@ -83,11 +83,11 @@ class FoundationTests(unittest.TestCase):
 
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.work = Path(temporary.name)
+        self.plan_directory = Path(temporary.name)
         self.environment = patch.dict(os.environ, {
             "GITHUB_RUN_ID": "98765",
             "GITHUB_RUN_ATTEMPT": "2",
-            "GITHUB_STEP_SUMMARY": str(self.work / "summary.md"),
+            "GITHUB_STEP_SUMMARY": str(self.plan_directory / "summary.md"),
         })
         self.environment.start()
         self.addCleanup(self.environment.stop)
@@ -103,16 +103,16 @@ class FoundationTests(unittest.TestCase):
 
     def add_plan(self, plan, **arguments):
         self.stubber.add_response(
-            "describe_change_set", plan, {"ChangeSetName": CHANGE_SET, **arguments},
+            "describe_change_set", plan, {"ChangeSetName": CHANGE_SET_ARN, **arguments},
         )
 
     def add_creation(self):
         self.add_stack()
-        self.stubber.add_response("create_change_set", {"Id": CHANGE_SET}, {
+        self.stubber.add_response("create_change_set", {"Id": CHANGE_SET_ARN}, {
             "StackName": STACK_NAME,
             "ChangeSetName": "foundation-test-98765-2",
             "ChangeSetType": "UPDATE",
-            "Description": DESCRIPTION,
+            "Description": REVISION,
             "TemplateBody": TEMPLATE,
             "Parameters": [
                 {"ParameterKey": "ECSClusterName", "UsePreviousValue": True},
@@ -123,10 +123,10 @@ class FoundationTests(unittest.TestCase):
         })
 
     def run_plan(self):
-        deploy.plan(self.client, STACK_NAME, ROLE, TEMPLATE, DESCRIPTION, self.work)
+        deploy.plan(self.client, STACK_NAME, ROLE, TEMPLATE, REVISION, self.plan_directory)
 
     def run_apply(self):
-        deploy.apply(self.client, STACK_NAME, CHANGE_SET, DESCRIPTION, self.work)
+        deploy.apply(self.client, STACK_NAME, CHANGE_SET_ARN, REVISION, self.plan_directory)
 
     def test_plan_preserves_parameters_role_revision_and_all_pages(self):
         self.add_creation()
@@ -138,23 +138,23 @@ class FoundationTests(unittest.TestCase):
         second_event = {"EventId": "second", "EventType": "VALIDATION_ERROR"}
         self.stubber.add_response("describe_events", {
             "OperationEvents": [first_event], "NextToken": "events-two",
-        }, {"ChangeSetName": CHANGE_SET})
+        }, {"ChangeSetName": CHANGE_SET_ARN})
         self.stubber.add_response("describe_events", {
             "OperationEvents": [second_event],
-        }, {"ChangeSetName": CHANGE_SET, "NextToken": "events-two"})
+        }, {"ChangeSetName": CHANGE_SET_ARN, "NextToken": "events-two"})
 
         self.run_plan()
 
-        changes = json.loads((self.work / "changes.json").read_text())
-        self.assertEqual(changes["Description"], DESCRIPTION)
-        self.assertEqual(changes["StackId"], STACK_ID)
-        self.assertEqual(changes["Changes"], [resource_change(), second])
-        self.assertNotIn("NextToken", changes)
-        validation = json.loads((self.work / "validation.json").read_text())
+        change_set = json.loads((self.plan_directory / "changes.json").read_text())
+        self.assertEqual(change_set["Description"], REVISION)
+        self.assertEqual(change_set["StackId"], STACK_ID)
+        self.assertEqual(change_set["Changes"], [resource_change(), second])
+        self.assertNotIn("NextToken", change_set)
+        validation = json.loads((self.plan_directory / "validation.json").read_text())
         self.assertEqual(validation["OperationEvents"], [first_event, second_event])
-        self.assertIn(CHANGE_SET, self.output.getvalue())
-        self.assertIn(DESCRIPTION, self.output.getvalue())
-        self.assertIn("BackendLogGroup", (self.work / "summary.md").read_text())
+        self.assertIn(CHANGE_SET_ARN, self.output.getvalue())
+        self.assertIn(REVISION, self.output.getvalue())
+        self.assertIn("BackendLogGroup", (self.plan_directory / "summary.md").read_text())
         self.stubber.assert_no_pending_responses()
 
     def test_no_change_is_success_with_artifacts(self):
@@ -163,18 +163,18 @@ class FoundationTests(unittest.TestCase):
         self.add_plan(no_changes)
         self.add_plan(no_changes)
         self.stubber.add_response("describe_events", {"OperationEvents": []}, {
-            "ChangeSetName": CHANGE_SET,
+            "ChangeSetName": CHANGE_SET_ARN,
         })
 
         self.run_plan()
 
         self.assertIn("Nothing to apply", self.output.getvalue())
-        changes = json.loads((self.work / "changes.json").read_text())
-        self.assertEqual(changes["Changes"], [])
-        self.assertEqual(changes["StatusReason"], NO_CHANGES)
-        self.assertEqual(changes["Description"], DESCRIPTION)
-        self.assertEqual(changes["StackId"], STACK_ID)
-        self.assertTrue((self.work / "validation.json").exists())
+        change_set = json.loads((self.plan_directory / "changes.json").read_text())
+        self.assertEqual(change_set["Changes"], [])
+        self.assertEqual(change_set["StatusReason"], NO_CHANGES)
+        self.assertEqual(change_set["Description"], REVISION)
+        self.assertEqual(change_set["StackId"], STACK_ID)
+        self.assertTrue((self.plan_directory / "validation.json").exists())
         self.stubber.assert_no_pending_responses()
 
     def test_no_change_detection_rejects_other_failures(self):
@@ -194,14 +194,14 @@ class FoundationTests(unittest.TestCase):
         self.add_plan(failure)
         self.add_plan(failure)
         self.stubber.add_response("describe_events", {"OperationEvents": []}, {
-            "ChangeSetName": CHANGE_SET,
+            "ChangeSetName": CHANGE_SET_ARN,
         })
 
         with self.assertRaisesRegex(RuntimeError, "Template validation failed"):
             self.run_plan()
 
-        self.assertTrue((self.work / "changes.json").exists())
-        self.assertTrue((self.work / "validation.json").exists())
+        self.assertTrue((self.plan_directory / "changes.json").exists())
+        self.assertTrue((self.plan_directory / "validation.json").exists())
         self.stubber.assert_no_pending_responses()
 
     def test_denied_validation_is_not_a_successful_plan(self):
@@ -209,14 +209,14 @@ class FoundationTests(unittest.TestCase):
         self.add_plan(reviewed_plan())
         self.add_plan(reviewed_plan())
         self.stubber.add_client_error("describe_events", "AccessDenied", expected_params={
-            "ChangeSetName": CHANGE_SET,
+            "ChangeSetName": CHANGE_SET_ARN,
         })
 
         with self.assertRaises(ClientError):
             self.run_plan()
 
-        self.assertTrue((self.work / "changes.json").exists())
-        self.assertFalse((self.work / "validation.json").exists())
+        self.assertTrue((self.plan_directory / "changes.json").exists())
+        self.assertFalse((self.plan_directory / "validation.json").exists())
         self.stubber.assert_no_pending_responses()
 
     def test_missing_or_denied_stack_never_creates_or_executes(self):
@@ -242,7 +242,7 @@ class FoundationTests(unittest.TestCase):
             "StackPolicyBody": deploy.STACK_POLICY.read_text(),
         })
         self.stubber.add_response("execute_change_set", {}, {
-            "ChangeSetName": CHANGE_SET,
+            "ChangeSetName": CHANGE_SET_ARN,
             "DisableRollback": False,
         })
         self.add_stack()
@@ -309,7 +309,7 @@ class FoundationTests(unittest.TestCase):
     def test_denied_plan_does_not_change_policy(self):
         self.add_stack()
         self.stubber.add_client_error("describe_change_set", "AccessDenied", expected_params={
-            "ChangeSetName": CHANGE_SET,
+            "ChangeSetName": CHANGE_SET_ARN,
         })
 
         with self.assertRaises(ClientError):
@@ -338,7 +338,7 @@ class FoundationTests(unittest.TestCase):
             "StackPolicyBody": deploy.STACK_POLICY.read_text(),
         })
         self.stubber.add_response("execute_change_set", {}, {
-            "ChangeSetName": CHANGE_SET,
+            "ChangeSetName": CHANGE_SET_ARN,
             "DisableRollback": False,
         })
         self.add_stack(StackStatus="UPDATE_ROLLBACK_COMPLETE")
@@ -399,7 +399,7 @@ class CommandTests(unittest.TestCase):
             with patch.dict(os.environ, settings, clear=True):
                 with patch.object(deploy.boto3, "Session", return_value=session) as constructor:
                     with patch.object(deploy.subprocess, "check_output", return_value="commit-id\n"):
-                        with patch.object(deploy, "plan") as plan:
+                        with patch.object(deploy, "plan", autospec=True) as plan:
                             self.assertEqual(deploy.main(["plan", ""]), 0)
 
                 constructor.assert_called_once_with(region_name="ap-southeast-2")

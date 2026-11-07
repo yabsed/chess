@@ -30,10 +30,12 @@ Resources:
     Properties:
       Family:
         Fn::ImportValue: !Sub '${FoundationStack}-Cluster'
+
       NetworkMode: awsvpc
       RequiresCompatibilities: [EC2]
       Cpu: '512'
       Memory: '1024'
+
       ExecutionRoleArn:
         Fn::ImportValue: !Sub '${FoundationStack}-ExecutionRole'
 
@@ -41,20 +43,17 @@ Resources:
         - Name: backend
           Image: !Ref ImageUri
           Essential: true
+
           ReadonlyRootFilesystem: true
           LinuxParameters:
             InitProcessEnabled: true
-            Capabilities:
-              Drop: [ALL]
+            Capabilities: {Drop: [ALL]}
 
           PortMappings:
-            - ContainerPort: 8000
-              HostPort: 8000
-              Protocol: tcp
+            - {ContainerPort: 8000, HostPort: 8000, Protocol: tcp}
 
           Environment:
-            - Name: CHESS_ORIGIN
-              Value: !Ref FrontendOrigin
+            - {Name: CHESS_ORIGIN, Value: !Ref FrontendOrigin}
             - Name: FORWARDED_ALLOW_IPS
               Value:
                 Fn::ImportValue: !Sub '${FoundationStack}-ProxyCidrs'
@@ -77,7 +76,9 @@ Resources:
               - CMD
               - .venv/bin/python
               - -c
-              - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"
+              - >-
+                import urllib.request;
+                urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)
             Interval: 15
             Timeout: 5
             Retries: 3
@@ -106,8 +107,7 @@ Resources:
           Weight: 1
           Base: 0
 
-      DeploymentController:
-        Type: ECS
+      DeploymentController: {Type: ECS}
       DeploymentConfiguration:
         MinimumHealthyPercent: 100
         MaximumPercent: 200
@@ -119,11 +119,10 @@ Resources:
       EnableECSManagedTags: true
       EnableExecuteCommand: false
       AvailabilityZoneRebalancing: ENABLED
+
       PlacementStrategies:
-        - Type: spread
-          Field: attribute:ecs.availability-zone
-        - Type: binpack
-          Field: MEMORY
+        - {Type: spread, Field: attribute:ecs.availability-zone}
+        - {Type: binpack, Field: MEMORY}
 
       NetworkConfiguration:
         AwsvpcConfiguration:

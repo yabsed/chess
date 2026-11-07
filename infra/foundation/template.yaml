@@ -20,7 +20,7 @@ Parameters:
     Description: Existing API-only IAM user; its access key stays in GitHub Secrets.
 
 Resources:
-  # Network
+  # VPC and subnets
 
   VPC:
     Type: AWS::EC2::VPC
@@ -31,25 +31,7 @@ Resources:
       EnableDnsSupport: true
       EnableDnsHostnames: true
       Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-vpc'
-
-  InternetGateway:
-    Type: AWS::EC2::InternetGateway
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-igw'
-
-  GatewayAttachment:
-    Type: AWS::EC2::VPCGatewayAttachment
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      VpcId: !Ref VPC
-      InternetGatewayId: !Ref InternetGateway
+        - {Key: Name, Value: !Sub '${ECSClusterName}-vpc'}
 
   PublicSubnetA:
     Type: AWS::EC2::Subnet
@@ -60,8 +42,7 @@ Resources:
       AvailabilityZone: !Select [0, !GetAZs '']
       CidrBlock: 10.20.0.0/20
       Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-subnet-public1-${AWS::Region}a'
+        - {Key: Name, Value: !Sub '${ECSClusterName}-subnet-public1-${AWS::Region}a'}
 
   PublicSubnetB:
     Type: AWS::EC2::Subnet
@@ -72,8 +53,7 @@ Resources:
       AvailabilityZone: !Select [1, !GetAZs '']
       CidrBlock: 10.20.16.0/20
       Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-subnet-public2-${AWS::Region}b'
+        - {Key: Name, Value: !Sub '${ECSClusterName}-subnet-public2-${AWS::Region}b'}
 
   PrivateSubnetA:
     Type: AWS::EC2::Subnet
@@ -84,8 +64,7 @@ Resources:
       AvailabilityZone: !Select [0, !GetAZs '']
       CidrBlock: 10.20.128.0/20
       Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-subnet-private1-${AWS::Region}a'
+        - {Key: Name, Value: !Sub '${ECSClusterName}-subnet-private1-${AWS::Region}a'}
 
   PrivateSubnetB:
     Type: AWS::EC2::Subnet
@@ -96,8 +75,25 @@ Resources:
       AvailabilityZone: !Select [1, !GetAZs '']
       CidrBlock: 10.20.144.0/20
       Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-subnet-private2-${AWS::Region}b'
+        - {Key: Name, Value: !Sub '${ECSClusterName}-subnet-private2-${AWS::Region}b'}
+
+  # Public internet route
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Tags:
+        - {Key: Name, Value: !Sub '${ECSClusterName}-igw'}
+
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
 
   PublicRoutes:
     Type: AWS::EC2::RouteTable
@@ -106,8 +102,7 @@ Resources:
     Properties:
       VpcId: !Ref VPC
       Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-rtb-public'
+        - {Key: Name, Value: !Sub '${ECSClusterName}-rtb-public'}
 
   PublicInternetRoute:
     Type: AWS::EC2::Route
@@ -135,6 +130,7 @@ Resources:
       RouteTableId: !Ref PublicRoutes
       SubnetId: !Ref PublicSubnetB
 
+  # Private outbound access: one NAT preserves the current cost and availability tradeoff.
   NatAddress:
     Type: AWS::EC2::EIP
     DependsOn: GatewayAttachment
@@ -143,10 +139,8 @@ Resources:
     Properties:
       Domain: vpc
       Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-eip-${AWS::Region}a'
+        - {Key: Name, Value: !Sub '${ECSClusterName}-eip-${AWS::Region}a'}
 
-  # One NAT preserves the current cost and availability tradeoff.
   NatGateway:
     Type: AWS::EC2::NatGateway
     DeletionPolicy: Retain
@@ -157,8 +151,9 @@ Resources:
         Fn::GetAtt: [NatAddress, AllocationId]
       SubnetId: !Ref PublicSubnetA
       Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-nat-public1-${AWS::Region}a'
+        - {Key: Name, Value: !Sub '${ECSClusterName}-nat-public1-${AWS::Region}a'}
+
+  # Private subnet A route
 
   PrivateRoutesA:
     Type: AWS::EC2::RouteTable
@@ -167,18 +162,7 @@ Resources:
     Properties:
       VpcId: !Ref VPC
       Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-rtb-private1-${AWS::Region}a'
-
-  PrivateRoutesB:
-    Type: AWS::EC2::RouteTable
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      VpcId: !Ref VPC
-      Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-rtb-private2-${AWS::Region}b'
+        - {Key: Name, Value: !Sub '${ECSClusterName}-rtb-private1-${AWS::Region}a'}
 
   PrivateInternetRouteA:
     Type: AWS::EC2::Route
@@ -186,15 +170,6 @@ Resources:
     UpdateReplacePolicy: Retain
     Properties:
       RouteTableId: !Ref PrivateRoutesA
-      DestinationCidrBlock: 0.0.0.0/0
-      NatGatewayId: !Ref NatGateway
-
-  PrivateInternetRouteB:
-    Type: AWS::EC2::Route
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      RouteTableId: !Ref PrivateRoutesB
       DestinationCidrBlock: 0.0.0.0/0
       NatGatewayId: !Ref NatGateway
 
@@ -206,6 +181,26 @@ Resources:
       RouteTableId: !Ref PrivateRoutesA
       SubnetId: !Ref PrivateSubnetA
 
+  # Private subnet B route
+
+  PrivateRoutesB:
+    Type: AWS::EC2::RouteTable
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - {Key: Name, Value: !Sub '${ECSClusterName}-rtb-private2-${AWS::Region}b'}
+
+  PrivateInternetRouteB:
+    Type: AWS::EC2::Route
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      RouteTableId: !Ref PrivateRoutesB
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
   PrivateAssociationB:
     Type: AWS::EC2::SubnetRouteTableAssociation
     DeletionPolicy: Retain
@@ -213,6 +208,8 @@ Resources:
     Properties:
       RouteTableId: !Ref PrivateRoutesB
       SubnetId: !Ref PrivateSubnetB
+
+  # Private access to S3
 
   S3Endpoint:
     Type: AWS::EC2::VPCEndpoint
@@ -224,97 +221,41 @@ Resources:
       ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
       RouteTableIds: [!Ref PrivateRoutesA, !Ref PrivateRoutesB]
       Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-vpce-s3'
+        - {Key: Name, Value: !Sub '${ECSClusterName}-vpce-s3'}
 
   # Traffic: CloudFront -> private ALB -> backend
 
-  # Only CloudFront may reach the private ALB. The prefix list is regional.
-  LoadBalancerSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
+  # API responses are never cached; viewer headers include auth and WebSocket headers.
+  ApiDistribution:
+    Type: AWS::CloudFront::Distribution
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      GroupName: !Sub '${ECSClusterName}-alb'
-      GroupDescription: Public HTTPS entry
-      VpcId: !Ref VPC
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          SourcePrefixListId: pl-b8a742d1
+      DistributionConfig:
+        Enabled: true
+        HttpVersion: http2
+        IPV6Enabled: true
 
-  BackendSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      GroupName: !Sub '${ECSClusterName}-backend'
-      GroupDescription: Backend access from ALB
-      VpcId: !Ref VPC
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 8000
-          ToPort: 8000
-          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+        Origins:
+          - Id: backend
+            DomainName: !GetAtt LoadBalancer.DNSName
+            VpcOriginConfig:
+              VpcOriginId: !GetAtt ApiOrigin.Id
+              OriginReadTimeout: 30
+              OriginKeepaliveTimeout: 5
 
-  DatabaseSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      GroupName: !Sub '${ECSClusterName}-db'
-      GroupDescription: PostgreSQL access from backend
-      VpcId: !Ref VPC
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 5432
-          ToPort: 5432
-          SourceSecurityGroupId: !Ref BackendSecurityGroup
+        DefaultCacheBehavior:
+          TargetOriginId: backend
+          ViewerProtocolPolicy: https-only
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3
 
-  LoadBalancer:
-    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      Name: !Sub '${ECSClusterName}-alb'
-      Scheme: internal
-      Type: application
-      Subnets: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
-      SecurityGroups: [!Ref LoadBalancerSecurityGroup]
-      LoadBalancerAttributes:
-        - Key: idle_timeout.timeout_seconds
-          Value: '60'
-
-  TargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      Name: !Sub '${ECSClusterName}-backend-tg'
-      VpcId: !Ref VPC
-      TargetType: ip
-      Protocol: HTTP
-      Port: 8000
-      HealthCheckPath: /api/health
-      HealthCheckIntervalSeconds: 30
-      HealthCheckTimeoutSeconds: 5
-      HealthyThresholdCount: 5
-      UnhealthyThresholdCount: 2
-      Matcher:
-        HttpCode: '200'
-
-  Listener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      LoadBalancerArn: !Ref LoadBalancer
-      Protocol: HTTP
-      Port: 80
-      DefaultActions:
-        - Type: forward
-          TargetGroupArn: !Ref TargetGroup
+        ViewerCertificate: {CloudFrontDefaultCertificate: true}
+      Tags:
+        - {Key: Name, Value: !Sub '${ECSClusterName}-backend'}
 
   ApiOrigin:
     Type: AWS::CloudFront::VpcOrigin
@@ -330,38 +271,84 @@ Resources:
         OriginProtocolPolicy: http-only
         OriginSSLProtocols: [SSLv3, TLSv1, TLSv1.1, TLSv1.2]
 
-  # API responses are never cached; viewer headers include auth and WebSocket headers.
-  ApiDistribution:
-    Type: AWS::CloudFront::Distribution
+  # Only CloudFront may reach the private ALB. The prefix list is regional.
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      DistributionConfig:
-        Enabled: true
-        HttpVersion: http2
-        IPV6Enabled: true
-        Origins:
-          - Id: backend
-            DomainName: !GetAtt LoadBalancer.DNSName
-            VpcOriginConfig:
-              VpcOriginId: !GetAtt ApiOrigin.Id
-              OriginReadTimeout: 30
-              OriginKeepaliveTimeout: 5
-        DefaultCacheBehavior:
-          TargetOriginId: backend
-          ViewerProtocolPolicy: https-only
-          AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
-          CachedMethods: [GET, HEAD]
-          Compress: true
-          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
-          OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3
-        ViewerCertificate:
-          CloudFrontDefaultCertificate: true
-      Tags:
-        - Key: Name
-          Value: !Sub '${ECSClusterName}-backend'
+      GroupName: !Sub '${ECSClusterName}-alb'
+      GroupDescription: Public HTTPS entry
+
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourcePrefixListId: pl-b8a742d1
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub '${ECSClusterName}-alb'
+      Scheme: internal
+      Type: application
+
+      Subnets: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+      SecurityGroups: [!Ref LoadBalancerSecurityGroup]
+
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '60'
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Sub '${ECSClusterName}-backend-tg'
+      VpcId: !Ref VPC
+      TargetType: ip
+      Protocol: HTTP
+      Port: 8000
+
+      HealthCheckPath: /api/health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 5
+      UnhealthyThresholdCount: 2
+      Matcher: {HttpCode: '200'}
 
   # Database
+
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      GroupName: !Sub '${ECSClusterName}-db'
+      GroupDescription: PostgreSQL access from backend
+
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref BackendSecurityGroup
 
   DatabaseSubnets:
     Type: AWS::RDS::DBSubnetGroup
@@ -425,8 +412,7 @@ Resources:
     Properties:
       RepositoryName: !Sub '${ECSClusterName}-backend'
       ImageTagMutability: IMMUTABLE
-      EncryptionConfiguration:
-        EncryptionType: AES256
+      EncryptionConfiguration: {EncryptionType: AES256}
 
   BackendLogs:
     Type: AWS::Logs::LogGroup
@@ -438,58 +424,22 @@ Resources:
 
   # Compute
 
-  InstanceRole:
-    Type: AWS::IAM::Role
+  BackendSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      RoleName: !Sub '${ECSClusterName}-ecs-instance'
-      Description: Allows EC2 instances to call AWS services on your behalf.
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: ec2.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role'
-        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
+      GroupName: !Sub '${ECSClusterName}-backend'
+      GroupDescription: Backend access from ALB
 
-  InstanceProfile:
-    Type: AWS::IAM::InstanceProfile
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      InstanceProfileName: !Sub '${ECSClusterName}-ecs-instance'
-      Roles: [!Ref InstanceRole]
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
 
-  ExecutionRole:
-    Type: AWS::IAM::Role
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      RoleName: !Sub '${ECSClusterName}-ecs-execution'
-      Description: Allows ECS tasks to call AWS services on your behalf.
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: ecs-tasks.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
-      Policies:
-        - PolicyName: chess-db-secret
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action: secretsmanager:GetSecretValue
-                Resource: !Ref DatabaseUrl
-
-  # These five logical IDs belong to the existing console-created stack.
+  # Preserve the original logical IDs for the console-created ECS cluster and capacity.
   ECSCluster:
     Type: AWS::ECS::Cluster
     Properties:
@@ -502,6 +452,35 @@ Resources:
         ExecuteCommandConfiguration:
           Logging: DEFAULT
 
+  # EC2 host identity and launch configuration
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      RoleName: !Sub '${ECSClusterName}-ecs-instance'
+      Description: Allows EC2 instances to call AWS services on your behalf.
+
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      InstanceProfileName: !Sub '${ECSClusterName}-ecs-instance'
+      Roles: [!Ref InstanceRole]
+
   ECSLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
@@ -509,8 +488,7 @@ Resources:
         # Pin the reviewed AL2023 x86-64 AMI; upgrades are explicit template changes.
         ImageId: ami-003b37e6c99f7531d
         InstanceType: t3.small
-        IamInstanceProfile:
-          Arn: !GetAtt InstanceProfile.Arn
+        IamInstanceProfile: {Arn: !GetAtt InstanceProfile.Arn}
 
         NetworkInterfaces:
           - AssociatePublicIpAddress: false
@@ -542,13 +520,15 @@ Resources:
           InstanceWarmup: 300
           SkipMatching: true
     Properties:
+      # ECS managed scaling owns DesiredCapacity.
       MinSize: '1'
       MaxSize: '2'
-      # ECS managed scaling owns DesiredCapacity.
+
       LaunchTemplate:
         LaunchTemplateId: !Ref ECSLaunchTemplate
         Version: !GetAtt ECSLaunchTemplate.LatestVersionNumber
       VPCZoneIdentifier: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+
       Tags:
         - Key: Name
           PropagateAtLaunch: true
@@ -575,6 +555,34 @@ Resources:
           Weight: 1
           CapacityProvider: !Ref AsgCapacityProvider
 
+  # ECS task startup: pull the image, write logs and read the database secret.
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      RoleName: !Sub '${ECSClusterName}-ecs-execution'
+      Description: Allows ECS tasks to call AWS services on your behalf.
+
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+
+      Policies:
+        - PolicyName: chess-db-secret
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Resource: !Ref DatabaseUrl
+                Action: secretsmanager:GetSecretValue
+
   # Backend deployment permissions
 
   # This role can deploy only the application stack's resources, not the foundation.
@@ -582,32 +590,34 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub '${ECSClusterName}-backend-cloudformation'
+
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
-            Principal:
-              Service: cloudformation.amazonaws.com
+            Principal: {Service: cloudformation.amazonaws.com}
             Action: sts:AssumeRole
+
       Policies:
         - PolicyName: backend
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
+                Resource: !Sub 'arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/${ECSClusterName}:*'
                 Action:
                   - ecs:RegisterTaskDefinition
                   - ecs:DeregisterTaskDefinition
                   - ecs:ListTagsForResource
                   - ecs:TagResource
                   - ecs:UntagResource
-                Resource: !Sub 'arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/${ECSClusterName}:*'
 
               - Effect: Allow
-                Action: ecs:DescribeTaskDefinition
                 Resource: '*'
+                Action: ecs:DescribeTaskDefinition
 
               - Effect: Allow
+                Resource: !Sub 'arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service/${ECSClusterName}/${ECSClusterName}-backend'
                 Action:
                   - ecs:CreateService
                   - ecs:UpdateService
@@ -617,21 +627,20 @@ Resources:
                   - ecs:ListTagsForResource
                   - ecs:TagResource
                   - ecs:UntagResource
-                Resource: !Sub 'arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service/${ECSClusterName}/${ECSClusterName}-backend'
 
               - Effect: Allow
+                Resource: !Sub 'arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service-deployment/${ECSClusterName}/${ECSClusterName}-backend/*'
                 Action:
                   - ecs:DescribeServiceDeployments
                   - ecs:StopServiceDeployment
-                Resource: !Sub 'arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service-deployment/${ECSClusterName}/${ECSClusterName}-backend/*'
 
               - Effect: Allow
+                Resource: !GetAtt ExecutionRole.Arn
                 Action: iam:GetRole
-                Resource: !GetAtt ExecutionRole.Arn
 
               - Effect: Allow
-                Action: iam:PassRole
                 Resource: !GetAtt ExecutionRole.Arn
+                Action: iam:PassRole
                 Condition:
                   StringEquals:
                     iam:PassedToService: ecs-tasks.amazonaws.com
@@ -644,14 +653,17 @@ Resources:
     Properties:
       UserName: !Ref DeploymentUserName
       PolicyName: chess-deploy
+
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
+          # Publish images to this repository.
           - Effect: Allow
-            Action: ecr:GetAuthorizationToken
             Resource: '*'
+            Action: ecr:GetAuthorizationToken
 
           - Effect: Allow
+            Resource: !GetAtt Repository.Arn
             Action:
               - ecr:BatchCheckLayerAvailability
               - ecr:BatchGetImage
@@ -659,15 +671,17 @@ Resources:
               - ecr:UploadLayerPart
               - ecr:CompleteLayerUpload
               - ecr:PutImage
-            Resource: !GetAtt Repository.Arn
 
+          # Read foundation outputs and its applied template.
           - Effect: Allow
+            Resource: !Ref AWS::StackId
             Action:
               - cloudformation:DescribeStacks
               - cloudformation:GetTemplate
-            Resource: !Ref AWS::StackId
 
+          # Deploy the backend stack through its dedicated execution role.
           - Effect: Allow
+            Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ECSClusterName}-backend/*'
             Action:
               - cloudformation:CreateStack
               - cloudformation:UpdateStack
@@ -680,75 +694,66 @@ Resources:
               - cloudformation:DescribeStackResources
               - cloudformation:GetTemplate
               - cloudformation:GetTemplateSummary
-            Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ECSClusterName}-backend/*'
 
           - Effect: Allow
-            Action: iam:PassRole
             Resource: !GetAtt BackendDeploymentRole.Arn
+            Action: iam:PassRole
             Condition:
               StringEquals:
                 iam:PassedToService: cloudformation.amazonaws.com
 
+          # Verify the running backend service and tasks after deployment.
           - Effect: Allow
-            Action: ecs:DescribeServices
             Resource: !Sub 'arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service/${ECSClusterName}/${ECSClusterName}-backend'
+            Action: ecs:DescribeServices
 
           - Effect: Allow
-            Action: ecs:ListTasks
             Resource: '*'
+            Action: ecs:ListTasks
             Condition:
               ArnEquals:
                 ecs:cluster: !GetAtt ECSCluster.Arn
 
           - Effect: Allow
-            Action: ecs:DescribeTasks
             Resource: !Sub 'arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:task/${ECSClusterName}/*'
+            Action: ecs:DescribeTasks
 
 Outputs:
   ECSCluster:
     Value: !Ref ECSCluster
-    Export:
-      Name: !Sub '${AWS::StackName}-Cluster'
+    Export: {Name: !Sub '${AWS::StackName}-Cluster'}
 
   CapacityProvider:
     Value: !Ref AsgCapacityProvider
-    Export:
-      Name: !Sub '${AWS::StackName}-CapacityProvider'
+    Export: {Name: !Sub '${AWS::StackName}-CapacityProvider'}
 
   PrivateSubnets:
     Value: !Join [',', [!Ref PrivateSubnetA, !Ref PrivateSubnetB]]
-    Export:
-      Name: !Sub '${AWS::StackName}-PrivateSubnets'
+    Export: {Name: !Sub '${AWS::StackName}-PrivateSubnets'}
 
   ProxyCidrs:
     Value: !Join [',', [!GetAtt PrivateSubnetA.CidrBlock, !GetAtt PrivateSubnetB.CidrBlock]]
-    Export:
-      Name: !Sub '${AWS::StackName}-ProxyCidrs'
+    Export: {Name: !Sub '${AWS::StackName}-ProxyCidrs'}
 
   BackendSecurityGroup:
     Value: !Ref BackendSecurityGroup
-    Export:
-      Name: !Sub '${AWS::StackName}-BackendSecurityGroup'
+    Export: {Name: !Sub '${AWS::StackName}-BackendSecurityGroup'}
 
   TargetGroup:
     Value: !Ref TargetGroup
-    Export:
-      Name: !Sub '${AWS::StackName}-TargetGroup'
+    Export: {Name: !Sub '${AWS::StackName}-TargetGroup'}
 
   ExecutionRole:
     Value: !GetAtt ExecutionRole.Arn
-    Export:
-      Name: !Sub '${AWS::StackName}-ExecutionRole'
+    Export: {Name: !Sub '${AWS::StackName}-ExecutionRole'}
 
   DatabaseUrl:
     Value: !Ref DatabaseUrl
-    Export:
-      Name: !Sub '${AWS::StackName}-DatabaseUrl'
+    Export: {Name: !Sub '${AWS::StackName}-DatabaseUrl'}
 
   LogGroup:
     Value: !Ref BackendLogs
-    Export:
-      Name: !Sub '${AWS::StackName}-LogGroup'
+    Export: {Name: !Sub '${AWS::StackName}-LogGroup'}
 
   RepositoryUri:
     Value: !GetAtt Repository.RepositoryUri
@@ -758,3 +763,57 @@ Outputs:
 
   ApiUrl:
     Value: !Sub 'https://${ApiDistribution.DomainName}'
+
+  # Exact inputs for bootstrap/access.yaml; CloudFormation resolves resource identities.
+  BootstrapFoundationStack:
+    Value: !Ref AWS::StackName
+
+  BootstrapAutoScalingGroupArn:
+    Value: !GetAtt ECSAutoScalingGroup.AutoScalingGroupARN
+
+  BootstrapCloudFrontResources:
+    Value: !Join
+      - ','
+      - - !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${ApiDistribution}'
+        - !GetAtt ApiOrigin.Arn
+
+  BootstrapNetworkResources:
+    Value: !Join
+      - ','
+      - - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:internet-gateway/${InternetGateway}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:launch-template/${ECSLaunchTemplate}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:natgateway/${NatGateway}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:route-table/${PublicRoutes}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:route-table/${PrivateRoutesA}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:route-table/${PrivateRoutesB}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/${LoadBalancerSecurityGroup}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/${BackendSecurityGroup}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/${DatabaseSecurityGroup}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${PublicSubnetA}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${PublicSubnetB}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${PrivateSubnetA}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${PrivateSubnetB}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-endpoint/${S3Endpoint}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc/${VPC}'
+        - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:elastic-ip/${NatAddress.AllocationId}'
+
+  BootstrapCapacityProviderName:
+    Value: !Ref AsgCapacityProvider
+
+  BootstrapLoadBalancerResources:
+    Value: !Join [',', [!Ref Listener, !Ref LoadBalancer, !Ref TargetGroup]]
+
+  BootstrapDatabaseSecretArn:
+    Value: !Ref DatabaseUrl
+
+  BootstrapLaunchTemplateId:
+    Value: !Ref ECSLaunchTemplate
+
+  BootstrapBackendSecurityGroupId:
+    Value: !Ref BackendSecurityGroup
+
+  BootstrapPrivateSubnetA:
+    Value: !Ref PrivateSubnetA
+
+  BootstrapPrivateSubnetB:
+    Value: !Ref PrivateSubnetB

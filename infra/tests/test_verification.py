@@ -99,6 +99,16 @@ class ServiceVerificationTests(unittest.TestCase):
 
         self.ecs.describe_tasks.assert_not_called()
 
+    def test_missing_pending_count_cannot_pass_as_zero(self):
+        del self.service["pendingCount"]
+
+        with self.assertRaisesRegex(
+            VerificationError, "pendingCount: expected 0, got None",
+        ):
+            self.verify()
+
+        self.ecs.describe_tasks.assert_not_called()
+
     def test_task_description_failures_or_missing_tasks_cannot_pass(self):
         responses = [
             {"tasks": []},
@@ -167,7 +177,9 @@ class ServiceVerificationTests(unittest.TestCase):
             {"tasks": [self.task] * 100},
             {"tasks": [last_task]},
         ]
-        with self.assertRaisesRegex(VerificationError, "not running"):
+        with self.assertRaisesRegex(
+            VerificationError, "lastStatus: expected 'RUNNING', got 'STOPPED'",
+        ):
             self.verify()
 
     def test_sdk_error_is_not_hidden_as_a_missing_service(self):
