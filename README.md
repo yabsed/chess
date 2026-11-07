@@ -81,11 +81,15 @@ CloudFront and a private ALB. RDS PostgreSQL holds the shared state.
 [`infra/foundation/template.yaml`](infra/foundation/template.yaml) manages the infrastructure.
 [`infra/backend/template.yaml`](infra/backend/template.yaml) manages the ECS task and service.
 GitHub Actions deploys backend images by digest through CloudFormation; it verifies
-the running release and the public HTTP and WebSocket endpoints.
+the service's task definition and the public HTTP and WebSocket endpoints. ECS and
+CloudFormation handle failed rollouts; a failed public endpoint check stops the
+workflow for investigation without a second automatic deployment.
 
 Backend changes merged into `main` deploy automatically when `AWS_DEPLOY_ENABLED`
 is `true`. Foundation changes use the **Infrastructure** workflow: plan, review the
-change set, then apply that exact plan. Frontend changes use the existing Pages workflow.
+change set, then apply that exact plan. Infrastructure and backend deployments run
+independently: apply required infrastructure before releasing the app. Frontend
+changes use the existing Pages workflow.
 
 See [infrastructure operations](infra/README.md) for credentials, deployment,
 rollback, capacity, data protection, and the existing-resource adoption boundary.

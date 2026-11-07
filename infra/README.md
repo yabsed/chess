@@ -1,47 +1,35 @@
 # Deployment
 
-Choose the directory for the work you are doing:
+Workflows show when and in what order to run each step. Shell scripts contain the
+AWS commands. CloudFormation manages resources; ECS starts and replaces containers.
 
-| Directory | Change |
+| File | Responsibility |
 | --- | --- |
-| [backend/](backend/) | Application image, ECS task and service |
-| [foundation/](foundation/) | Network, traffic, database, compute and backend deployment permissions |
-| [bootstrap/](bootstrap/README.md) | Infrastructure user's permissions and foundation execution role |
+| [backend/deploy.sh](backend/deploy.sh) | Publish the tested image, deploy it, and check the API |
+| [foundation/plan.sh](foundation/plan.sh) | Create a change set for review |
+| [foundation/apply.sh](foundation/apply.sh) | Apply that change set |
+| [foundation/template.yaml](foundation/template.yaml) | Network, EC2 capacity, ALB, CloudFront, RDS, ECR and roles |
+| [backend/template.yaml](backend/template.yaml) | ECS task definition and service |
+| [bootstrap/access.yaml](bootstrap/access.yaml) | Infrastructure deployment permissions |
+| [backend/smoke.py](backend/smoke.py) | HTTP health and Engine.IO WebSocket handshake |
 
-Each directory keeps its template beside the commands that use it. These templates
-manage existing production resources; preserve their logical IDs. They are not an
-empty-account installer. The database, its credentials and API-only deployment
-users existed before CloudFormation adoption.
+The templates manage existing production resources. Preserve their logical IDs.
+The database, its credentials and deployment users predate CloudFormation; this
+is not an installer for an empty account.
 
-Workflows select when to run and which credentials to pass. Python programs hold
-deployment state and make the checks and recovery decisions. CloudFormation YAML
-declares the resources. `backend/smoke.py` checks HTTP and the Engine.IO WebSocket handshake.
-
-```mermaid
-flowchart LR
-    frontend[Frontend change on main] --> pages[Check, build, publish Pages]
-    backend[Backend change on main] --> test[Build and test]
-    test --> image[Publish image digest]
-    image --> release[Deploy and verify ECS]
-    foundation[Foundation change] --> plan[Manual plan]
-    plan --> review[Review and apply]
-    review --> test
-```
-
-Pull requests run checks without AWS credentials. Backend and foundation writes
-share a concurrency group. Foundation template changes do not start Backend on push;
-the Infrastructure workflow calls Backend after a successful apply at the same
-commit. If a change touches both, apply the foundation before releasing the backend.
+Read a workflow first, then its script, then the template it deploys. Each script
+runs from top to bottom; there is no shared deployment framework. Commands run from
+the repository root. Keep one command option per line and blank lines between tasks.
+In YAML, use two blank lines between resources and one between related groups of
+properties. Align neighboring values within a group; keep long values on their own
+lines. Preserve that layout when editing instead of compressing it into fewer lines.
 
 ## Settings
 
-GitHub repository variables select the deployment target. The scripts check the
-authenticated account against `AWS_ACCOUNT_ID` before reading deployment resources.
-
-| Repository setting | Value |
+| GitHub repository setting | Value |
 | --- | --- |
-| Secret `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Existing `chess-github-deploy` key pair |
-| Secret `AWS_INFRA_ACCESS_KEY_ID` / `AWS_INFRA_SECRET_ACCESS_KEY` | Separate `chess-github-infra` key pair |
+| Secret `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Backend deployment key pair |
+| Secret `AWS_INFRA_ACCESS_KEY_ID` / `AWS_INFRA_SECRET_ACCESS_KEY` | Infrastructure deployment key pair |
 | Variable `AWS_DEPLOY_ENABLED` | `true` enables backend deployment |
 | Variable `AWS_REGION` | Deployment region |
 | Variable `AWS_ACCOUNT_ID` | Expected AWS account |
@@ -50,132 +38,99 @@ authenticated account against `AWS_ACCOUNT_ID` before reading deployment resourc
 | Variable `FOUNDATION_ROLE` | Foundation CloudFormation execution role name |
 | Variable `VITE_BACKEND_URL` | Public HTTPS API origin for the frontend |
 
-Each access key ID and secret must belong to the same issuance. Infrastructure
-uses its own pair for both plan and apply; `AWS_DEPLOY_ENABLED` controls only Backend.
-The reusable Backend workflow receives only the backend pair. SSH keys are unused.
-The database URL stays in Secrets Manager and reaches ECS at task startup. Changing
-it requires a coordinated application redeployment.
+Each key ID and secret must belong to the same issuance. Workflows check the AWS
+account before making changes. The database URL stays in Secrets Manager and is
+injected at task startup. Repository variables and workflow logs are not secret
+storage. See [bootstrap](bootstrap/README.md) for deployment permissions.
 
-Variables are not secret storage. Logs and plan artifacts can contain account IDs
-and resource ARNs. Before making the repository public, review Git history and past
-Actions runs too: removing a value from current files does not remove earlier copies.
+## Backend
 
-## Release the backend
+Merge backend changes to `main`. The [Backend workflow](../.github/workflows/backend.yml):
 
-Merge backend changes to `main`. With deployment enabled, Backend builds an image,
-tests it with PostgreSQL and checks HTTP and WebSockets. Then
-[`release.py`](backend/release.py) publishes that image, deploys its immutable ECR
-digest and verifies the actual ECS tasks and public endpoint.
+1. Checks infrastructure templates and tests the smoke command.
+2. Builds the image, starts it with a fresh PostgreSQL database, and checks HTTP and WebSockets.
+3. Pushes that image to ECR and passes its immutable digest to `aws cloudformation deploy`.
+4. Confirms the ECS service uses the resulting task definition and checks the public endpoint.
 
-Release stops if the checked-in foundation differs from the deployed template.
-Comments, layout, root documentation and the obsolete revision marker do not count
-as resource changes. Non-exported `Bootstrap*` outputs are also excluded from this
-backend check: they only supply the operator's access update. Bootstrap separately
-requires the complete reviewed template, including these outputs, before using it.
-Resource settings, resource metadata and existing backend outputs remain checked.
-The Backend comparison lives beside the release flow; `templates.py` only normalizes
-template representation and the legacy revision marker. Bootstrap uses that same
-normalization with its own full comparison.
+Pull requests stop after the local checks. Releases require `AWS_DEPLOY_ENABLED=true`.
+ECS's deployment circuit breaker and CloudFormation handle failed rollouts.
+A failed public endpoint check fails the workflow for investigation; it does not
+trigger a second automatic deployment. The successful run summary records the image digest.
 
-ECS handles failed rollouts. If post-deployment checks fail, the release script
-restores the previous template and all its parameters, verifies the restoration,
-and still fails the run. A first release has no previous version to restore.
-New and previous releases use the same `Release` value: template text and all its
-parameters. Both go through the same deployment function. The verification failure
-branch contains the complete restore flow; success reporting follows it.
-CloudFormation deployment failures do not enter this post-deployment restore path.
+## Infrastructure
 
-Revert an application commit to release an older version through CI. Container
-rollback does not undo database writes; schema changes must remain compatible
-with the previous application.
+The [Infrastructure workflow](../.github/workflows/infra.yml) checks PRs and offers
+two manual actions on `main`:
 
-## Change the foundation
+1. **plan** creates a CloudFormation change set. Read the ARN in the run summary,
+   then review its resource changes in the log or CloudFormation console.
+2. **apply** executes that reviewed ARN and waits for the stack update to finish.
 
-1. Review and merge the template change.
-2. Run **Infrastructure → plan** on `main`.
-3. Read the summary and `infrastructure-plan` artifact, including validation events.
-4. Run **Infrastructure → apply** with that exact change set ARN.
+An unchanged template reports "nothing to apply". Other AWS errors fail the run.
+Apply checks the target stack; CloudFormation checks whether the change set is
+available. It applies the template recorded in the plan, regardless of later Git
+commits. Create a new plan if you want to deploy a newer template.
 
-Apply requires the same stack, commit and template as the reviewed plan. It allows
-only updates to existing non-IAM resources without replacement. Additions,
-removals, replacements and IAM changes need an operator-reviewed migration and
-appropriate permissions. A stack policy also blocks database replacement and removal.
-[`deploy.py`](foundation/deploy.py) reads the entire change set before any write;
-each rejection condition appears beside the apply operation.
+The existing infrastructure role is limited to updates of allowlisted resources.
+Resource additions and IAM changes may require an operator with the appropriate
+permissions. The database stack policy blocks replacement and removal; deletion
+protection and retention settings remain in the template.
 
-AWS's explicit no-change failure reason is treated as a successful no-op plan.
-Other errors fail the run. An available plan can have no resource changes when only
-stack-level settings change; review its description before applying it.
+Infrastructure and backend releases share a deployment concurrency group, but run
+independently. Applying infrastructure does not start Backend. When an app change
+needs new infrastructure, merge and apply the infrastructure first, then merge the
+app change or manually run Backend on `main`. The workflow does not compare the
+entire foundation template before releasing an app.
 
-## Run locally
+## Roll back an application
 
-Run commands from the repository root on Linux with Bash, AWS CLI v2, Git, curl
-and Python 3.11+ available. Publishing a local image also needs Docker. Install the
-deployment and validation dependencies before checking templates or releasing:
+Use the previous successful run's image digest with the current compatible backend
+template. From the repository root, with AWS CLI v2 and deployment credentials:
+
+```sh
+set -a
+source infra/production.env
+set +a
+export AWS_DEFAULT_REGION="$AWS_REGION"
+
+aws sts get-caller-identity  # Check the account before deploying.
+role=$(aws cloudformation describe-stacks --stack-name "$FOUNDATION_STACK" \
+  --query "Stacks[0].Outputs[?OutputKey=='BackendDeploymentRole'].OutputValue | [0]" --output text)
+
+aws cloudformation deploy \
+  --stack-name "$BACKEND_STACK" \
+  --template-file infra/backend/template.yaml \
+  --role-arn "$role" \
+  --parameter-overrides "FoundationStack=$FOUNDATION_STACK" "ImageUri=$PREVIOUS_IMAGE" \
+  --no-fail-on-empty-changeset
+```
+
+Set `PREVIOUS_IMAGE` to the full `repository@sha256:...` URI first. Check the public
+endpoint afterward with the smoke command below. This changes the application image;
+it does not restore older infrastructure or undo SQL changes. Database changes must
+remain compatible with both app versions during a rolling deployment and rollback.
+
+## Local checks
+
+Use Python 3.11+, curl and a virtual environment. Deployment workflows also use AWS
+CLI v2, jq and Docker, provided by the GitHub runner.
 
 ```sh
 python3 -m venv /tmp/chess-infra
 source /tmp/chess-infra/bin/activate
 pip install -r infra/requirements.txt
 make infra-check
-```
-
-This checks the templates and runs deployment tests with simulated AWS responses.
-Tests cover rejected plans, image verification and full release restoration without
-AWS credentials or changes to live resources.
-
-The endpoint check can also run directly:
-
-```sh
 python3 -m infra.backend.smoke http://127.0.0.1:8000
 ```
 
-HTTP health requests retain curl's timeout and retry behavior. The WebSocket client
-checks the first Engine.IO open packet and its session ID, then closes the connection
-without sending application events. Local protocol tests exercise this handshake.
+`infra-check` runs cfn-lint, the safety rules in `safety.guard`, and three smoke-command
+tests against a local HTTP/WebSocket server. It uses no AWS credentials. The Backend
+workflow additionally checks the real application with a fresh PostgreSQL database;
+this does not test migrations of an existing production database.
 
-For AWS operations, authenticate as the appropriate deployment user or operator.
-Copy `infra/production.env.example` to `infra/production.env`, fill in your target,
-and export it explicitly. The real file is ignored by Git and is not loaded by CI.
-
-```sh
-set -a
-source infra/production.env
-set +a
-```
-
-To register these non-secret settings in GitHub, run
-`gh variable set --env-file infra/production.env`.
-
-Publish an already built and tested local image, or deploy an existing digest:
-
-```sh
-python3 -m infra.backend.release chess-backend:local
-python3 -m infra.backend.release --digest '<repository-uri>@sha256:<digest>'
-```
-
-These are alternatives. The digest path needs no Docker; use the matching backend
-template and keep the current foundation when restoring an older image.
-
-To plan or apply foundation changes locally:
-
-```sh
-python3 -m infra.foundation.deploy plan
-python3 -m infra.foundation.deploy apply '<change-set-arn>'
-```
-
-Review the printed plan files before apply. Local apply updates only the foundation;
-the automatic Backend call belongs to the GitHub workflow.
-
-## Production boundaries
+For local AWS commands, copy `production.env.example` to the ignored `production.env`
+and fill in the target settings. The workflows use GitHub variables, not this file.
 
 Production has one application task, a Single-AZ database and one NAT gateway.
-More replicas need enough ASG capacity for rolling deployment. ECS owns desired
-host capacity; the template owns its bounds, launch template and pinned AMI.
-Host changes use instance refresh and managed draining; verify application health afterward.
-
-RDS is private, encrypted and deletion-protected. The database, URL secret, ECR
-repository and logs are retained on deletion or replacement. Retention does not
-migrate data: a restored database must be checked before traffic moves. Backup
-retention is one day because the account's free plan rejected seven days. No
-long-term CloudTrail trail was added during adoption.
+The ASG's capacity must accommodate old and new tasks during rolling deployment.
+ECS owns desired host capacity; the template owns the limits and launch template.

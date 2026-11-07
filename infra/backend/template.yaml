@@ -1,60 +1,75 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: Small Chess application release; the image digest is the release input.
 
+
 Metadata:
   AWSToolsMetrics:
     AWSAgentToolkit: aws-cloudformation@3
   com.aws.cloudformation.Context:
     ref: [infra/README.md]
 
+
 Parameters:
   FoundationStack:
-    Type: String
+    Type:           String
     AllowedPattern: '[A-Za-z][A-Za-z0-9-]*'
 
   ImageUri:
-    Type: String
-    AllowedPattern: '[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com(\.cn)?/[a-z0-9._/-]+@sha256:[a-f0-9]{64}'
+    Type:           String
+    AllowedPattern: >-
+      [0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com(\.cn)?/[a-z0-9._/-]+@sha256:[a-f0-9]{64}
     Description: Immutable ECR image digest; never a mutable tag.
 
   FrontendOrigin:
-    Type: String
-    Default: https://yabsed.github.io
+    Type:           String
+    Default:        https://yabsed.github.io
     AllowedPattern: 'https://[^/ ]+'
 
+
 Resources:
+
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
-    DeletionPolicy: Retain
+
+
+    DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
+
+
     Properties:
       Family:
         Fn::ImportValue: !Sub '${FoundationStack}-Cluster'
 
-      NetworkMode: awsvpc
+      NetworkMode:             awsvpc
       RequiresCompatibilities: [EC2]
-      Cpu: '512'
+
+      Cpu:    '512'
       Memory: '1024'
 
       ExecutionRoleArn:
         Fn::ImportValue: !Sub '${FoundationStack}-ExecutionRole'
 
       ContainerDefinitions:
-        - Name: backend
-          Image: !Ref ImageUri
+        - Name:      backend
+          Image:     !Ref ImageUri
           Essential: true
 
           ReadonlyRootFilesystem: true
           LinuxParameters:
             InitProcessEnabled: true
-            Capabilities: {Drop: [ALL]}
+            Capabilities:
+              Drop: [ALL]
 
           PortMappings:
-            - {ContainerPort: 8000, HostPort: 8000, Protocol: tcp}
+            - ContainerPort: 8000
+              HostPort:      8000
+              Protocol:      tcp
 
           Environment:
-            - {Name: CHESS_ORIGIN, Value: !Ref FrontendOrigin}
-            - Name: FORWARDED_ALLOW_IPS
+            - Name:  CHESS_ORIGIN
+              Value: !Ref FrontendOrigin
+
+            - Name:  FORWARDED_ALLOW_IPS
               Value:
                 Fn::ImportValue: !Sub '${FoundationStack}-ProxyCidrs'
 
@@ -68,7 +83,7 @@ Resources:
             Options:
               awslogs-group:
                 Fn::ImportValue: !Sub '${FoundationStack}-LogGroup'
-              awslogs-region: !Ref AWS::Region
+              awslogs-region:        !Ref AWS::Region
               awslogs-stream-prefix: backend
 
           HealthCheck:
@@ -79,58 +94,75 @@ Resources:
               - >-
                 import urllib.request;
                 urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)
-            Interval: 15
-            Timeout: 5
-            Retries: 3
+
+            Interval:    15
+            Timeout:     5
+            Retries:     3
             StartPeriod: 30
+
           StopTimeout: 30
+
 
   # Preserve one replica during adoption. More replicas also need more deployment capacity.
   Service:
     Type: AWS::ECS::Service
-    DeletionPolicy: Retain
+
+
+    DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
+
+
     Properties:
       ServiceName:
         Fn::Join:
           - ''
           - - Fn::ImportValue: !Sub '${FoundationStack}-Cluster'
             - '-backend'
+
       Cluster:
         Fn::ImportValue: !Sub '${FoundationStack}-Cluster'
+
       TaskDefinition: !Ref TaskDefinition
-      DesiredCount: 1
+      DesiredCount:   1
 
       CapacityProviderStrategy:
         - CapacityProvider:
             Fn::ImportValue: !Sub '${FoundationStack}-CapacityProvider'
           Weight: 1
-          Base: 0
+          Base:   0
 
-      DeploymentController: {Type: ECS}
+      DeploymentController:
+        Type: ECS
+
       DeploymentConfiguration:
         MinimumHealthyPercent: 100
-        MaximumPercent: 200
+        MaximumPercent:        200
+
         DeploymentCircuitBreaker:
-          Enable: true
+          Enable:   true
           Rollback: true
 
       HealthCheckGracePeriodSeconds: 120
-      EnableECSManagedTags: true
-      EnableExecuteCommand: false
-      AvailabilityZoneRebalancing: ENABLED
+      EnableECSManagedTags:          true
+      EnableExecuteCommand:          false
+      AvailabilityZoneRebalancing:   ENABLED
 
       PlacementStrategies:
-        - {Type: spread, Field: attribute:ecs.availability-zone}
-        - {Type: binpack, Field: MEMORY}
+        - Type:  spread
+          Field: attribute:ecs.availability-zone
+
+        - Type:  binpack
+          Field: MEMORY
 
       NetworkConfiguration:
         AwsvpcConfiguration:
           AssignPublicIp: DISABLED
+
           Subnets:
             Fn::Split:
               - ','
               - Fn::ImportValue: !Sub '${FoundationStack}-PrivateSubnets'
+
           SecurityGroups:
             - Fn::ImportValue: !Sub '${FoundationStack}-BackendSecurityGroup'
 
@@ -139,6 +171,7 @@ Resources:
           ContainerPort: 8000
           TargetGroupArn:
             Fn::ImportValue: !Sub '${FoundationStack}-TargetGroup'
+
 
 Outputs:
   TaskDefinition:

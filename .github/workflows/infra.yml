@@ -1,5 +1,6 @@
 name: Infrastructure
 
+
 on:
   pull_request:
     paths:
@@ -10,69 +11,74 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: Plan changes, or apply a reviewed plan
-        type: choice
-        options: [plan, apply]
-        default: plan
+        description: Plan or apply infrastructure changes
+        type:        choice
+        options:     [plan, apply]
+        default:     plan
+
       change_set:
-        description: Change set ARN from plan (required for apply)
-        type: string
+        description: Reviewed change set ARN (apply only)
+        type:        string
+
 
 permissions:
   contents: read
 
+
+defaults:
+  run:
+    shell: bash
+
+
 jobs:
+
   validate:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check templates and deployment logic
-        run: |
-          pip install -r infra/requirements.txt
-          make infra-check
+      - name: Install validation tools
+        run:  pip install -r infra/requirements.txt
+
+      - name: Check infrastructure
+        run:  make infra-check
+
 
   foundation:
     needs: validate
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    if:    >-
+      github.event_name == 'workflow_dispatch'
+      && github.ref == 'refs/heads/main'
+
+    runs-on:         ubuntu-latest
     timeout-minutes: 120
+
     concurrency:
-      group: aws-chess-production
+      group:              aws-chess-${{ github.ref }}
       cancel-in-progress: false
+
     env:
-      AWS_REGION: ${{ vars.AWS_REGION }}
-      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_DEFAULT_REGION:    ${{ vars.AWS_REGION }}
+      AWS_PAGER:             ''
+      AWS_ACCOUNT_ID:        ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_INFRA_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_INFRA_SECRET_ACCESS_KEY }}
+
       FOUNDATION_STACK: ${{ vars.FOUNDATION_STACK }}
-      FOUNDATION_ROLE: ${{ vars.FOUNDATION_ROLE }}
+      FOUNDATION_ROLE:  ${{ vars.FOUNDATION_ROLE }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install deployment tools
-        run: pip install -r infra/requirements.txt
+      - name: Plan infrastructure changes
+        if:   inputs.action == 'plan'
+        run:  bash infra/foundation/plan.sh
 
-      - name: Plan or apply
+      - name: Apply the reviewed plan
+        if:   inputs.action == 'apply'
+
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_INFRA_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_INFRA_SECRET_ACCESS_KEY }}
-          ACTION: ${{ inputs.action }}
           CHANGE_SET: ${{ inputs.change_set }}
-        run: python3 -m infra.foundation.deploy "$ACTION" "$CHANGE_SET"
 
-      - name: Save plan
-        if: inputs.action == 'plan' && !cancelled()
-        uses: actions/upload-artifact@v4
-        with:
-          name: infrastructure-plan
-          path: |
-            ${{ runner.temp }}/changes.json
-            ${{ runner.temp }}/validation.json
-
-  backend:
-    needs: foundation
-    if: inputs.action == 'apply'
-    uses: ./.github/workflows/backend.yml
-    secrets:
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: bash infra/foundation/apply.sh "$CHANGE_SET"
