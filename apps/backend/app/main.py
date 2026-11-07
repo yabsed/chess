@@ -115,8 +115,7 @@ async def update() -> None:
             pending.clear()
 
             if monotonic() >= heartbeat_at:
-                if clients:
-                    await run_in_threadpool(room.heartbeat, list(clients))
+                await run_in_threadpool(room.heartbeat, list(clients))
                 heartbeat_at = monotonic() + 10
                 users.update(clients.values())
 

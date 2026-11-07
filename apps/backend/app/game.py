@@ -93,6 +93,16 @@ class Game:
             self.draw_offer = None
         self.revision += 1
 
+    def abandon(self, loser: Color | None) -> None:
+        if loser is None:
+            self.ending = {"result": "*", "reason": "aborted"}
+        else:
+            result = "0-1" if loser == "white" else "1-0"
+            self.ending = {"result": result, "reason": "abandonment"}
+
+        self.draw_offer = None
+        self.revision += 1
+
     def _move(self, color: Color, uci: str) -> None:
         if color != self.turn:
             raise InvalidAction("It is not your turn.")
