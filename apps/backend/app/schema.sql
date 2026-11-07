@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     expires_at TIMESTAMPTZ NOT NULL DEFAULT now() + interval '7 days'
 );
 
+-- Game seats remain assigned when a player disconnects.
 CREATE TABLE IF NOT EXISTS rooms (
     id         TEXT PRIMARY KEY,
     white_id   BIGINT NOT NULL REFERENCES users(id),
@@ -23,6 +24,7 @@ CREATE TABLE IF NOT EXISTS rooms (
     CHECK (white_id <> black_id)
 );
 
+-- Each user's current connection, room and matchmaking state.
 CREATE TABLE IF NOT EXISTS players (
     user_id    BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     room_id    TEXT REFERENCES rooms(id) ON DELETE SET NULL,
@@ -37,11 +39,12 @@ CREATE INDEX IF NOT EXISTS players_waiting ON players(waiting_at) WHERE waiting_
 
 CREATE OR REPLACE VIEW online_players AS
     SELECT players.*
-    FROM players JOIN sessions USING (token_hash)
+    FROM players
+    JOIN sessions USING (token_hash)
     WHERE players.user_id = sessions.user_id
-      AND sid IS NOT NULL
-      AND seen_at > now() - interval '35 seconds'
-      AND expires_at > now();
+      AND players.sid IS NOT NULL
+      AND players.seen_at > now() - interval '35 seconds'
+      AND sessions.expires_at > now();
 
 CREATE TABLE IF NOT EXISTS attempts (
     address    TEXT PRIMARY KEY,

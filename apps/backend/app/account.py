@@ -13,7 +13,7 @@ from pwdlib                import PasswordHash
 from starlette.concurrency import run_in_threadpool
 
 from . import room
-from .db       import lobby, pool
+from .db       import lobby_transaction, pool
 from .protocol import Credentials, Session, User
 
 
@@ -38,9 +38,11 @@ def request_key(request: Request) -> str:
 def find_user(key: str) -> User | None:
     with pool.connection() as db:
         row = db.execute("""
-            SELECT users.id, username, avatar_version
-            FROM sessions JOIN users ON users.id = sessions.user_id
-            WHERE token_hash = %s AND expires_at > now()
+            SELECT users.id, users.username, users.avatar_version
+            FROM sessions
+            JOIN users ON users.id = sessions.user_id
+            WHERE sessions.token_hash = %s
+              AND sessions.expires_at > now()
         """, (key,)).fetchone()
     return User.profile(row["id"], row["username"], row["avatar_version"]) if row else None
 
@@ -61,8 +63,10 @@ def login_attempt(request: Request, response: Response) -> None:
     with pool.connection() as db:
         db.execute("DELETE FROM attempts WHERE expires_at <= now()")
         row = db.execute("""
-            INSERT INTO attempts VALUES (%s, 1, now() + interval '1 minute')
-            ON CONFLICT (address) DO UPDATE SET count = attempts.count + 1
+            INSERT INTO attempts (address, count, expires_at)
+            VALUES (%s, 1, now() + interval '1 minute')
+            ON CONFLICT (address) DO UPDATE
+            SET count = attempts.count + 1
             RETURNING count
         """, (address,)).fetchone()
     assert row is not None
@@ -76,7 +80,10 @@ def new_session(db, row: dict) -> Session:
     user  = User.profile(row["id"], row["username"], row["avatar_version"])
 
     db.execute("DELETE FROM sessions WHERE expires_at <= now()")
-    db.execute("INSERT INTO sessions (token_hash, user_id) VALUES (%s, %s)", (key, user.id))
+    db.execute("""
+        INSERT INTO sessions (token_hash, user_id)
+        VALUES (%s, %s)
+    """, (key, user.id))
     return Session(user = user, token = token)
 
 
@@ -91,7 +98,8 @@ def register(credentials: Credentials) -> Session:
     with pool.connection() as db:
         try:
             row = db.execute("""
-                INSERT INTO users (username, password_hash) VALUES (%s, %s)
+                INSERT INTO users (username, password_hash)
+                VALUES (%s, %s)
                 RETURNING id, username, avatar_version
             """, (username, hashed)).fetchone()
         except UniqueViolation:
@@ -105,7 +113,8 @@ def login(credentials: Credentials) -> Session:
     with pool.connection() as db:
         row = db.execute("""
             SELECT id, username, password_hash, avatar_version
-            FROM users WHERE username = %s
+            FROM users
+            WHERE username = %s
         """, (credentials.username.lower(),)).fetchone()
 
     hashed = row["password_hash"] if row else dummy_hash
@@ -127,14 +136,20 @@ def me(request: Request, response: Response) -> User | None:
 @router.delete("/session", status_code = 204)
 def logout(request: Request):
     key = request_key(request)
-    with lobby() as db:
+    with lobby_transaction() as db:
         # Finish any in-flight action in this game before revoking its session.
         db.execute("""
-            SELECT r.id FROM rooms r JOIN players p ON p.room_id = r.id
-            WHERE p.token_hash = %s FOR UPDATE OF r
+            SELECT room.id
+            FROM rooms AS room
+            JOIN players AS player ON player.room_id = room.id
+            WHERE player.token_hash = %s
+            FOR UPDATE OF room
         """, (key,))
-        session = db.execute("DELETE FROM sessions WHERE token_hash = %s RETURNING user_id",
-                             (key,)).fetchone()
+        session = db.execute("""
+            DELETE FROM sessions
+            WHERE token_hash = %s
+            RETURNING user_id
+        """, (key,)).fetchone()
         if session:
             room.notify(db, session["user_id"])
 
@@ -158,9 +173,12 @@ def save_avatar(user_id: int, data: bytes) -> User:
     version = hashlib.sha256(data).hexdigest()[:16]
     with pool.connection() as db:
         row = db.execute("""
-            UPDATE users SET avatar = %s, avatar_version = %s WHERE id = %s
+            UPDATE users
+            SET avatar         = %(avatar)s,
+                avatar_version = %(avatar_version)s
+            WHERE id = %(user_id)s
             RETURNING id, username, avatar_version
-        """, (data, version, user_id)).fetchone()
+        """, {"avatar": data, "avatar_version": version, "user_id": user_id}).fetchone()
         assert row is not None
         room.notify(db, user_id)
     return User.profile(row["id"], row["username"], row["avatar_version"])

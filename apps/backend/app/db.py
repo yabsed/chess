@@ -26,7 +26,7 @@ def initialize() -> None:
 
 
 @contextmanager
-def lobby():
+def lobby_transaction():
     with pool.connection() as db:
         # Serialize seating and room capacity. Moves only lock their room row.
         db.execute("SELECT pg_advisory_xact_lock(1)")

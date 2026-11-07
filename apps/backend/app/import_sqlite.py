@@ -6,19 +6,25 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib  import Path
 
-from .db import initialize, lobby, pool
+from .db import initialize, lobby_transaction, pool
 
 
 def import_accounts(path: Path) -> tuple[int, int]:
     source = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri = True)
     try:
         source.execute("BEGIN")
-        users    = source.execute("SELECT id, username, password_hash, avatar, avatar_version FROM users").fetchall()
-        sessions = source.execute("SELECT token_hash, user_id, expires_at FROM sessions").fetchall()
+        users = source.execute("""
+            SELECT id, username, password_hash, avatar, avatar_version
+            FROM users
+        """).fetchall()
+        sessions = source.execute("""
+            SELECT token_hash, user_id, expires_at
+            FROM sessions
+        """).fetchall()
     finally:
         source.close()
 
-    with lobby() as db:
+    with lobby_transaction() as db:
         db.execute("LOCK TABLE users, sessions IN EXCLUSIVE MODE")
         if db.execute("SELECT 1 FROM users LIMIT 1").fetchone():
             raise ValueError("The destination already has accounts. Import into an empty database.")
@@ -28,15 +34,23 @@ def import_accounts(path: Path) -> tuple[int, int]:
                 INSERT INTO users (id, username, password_hash, avatar, avatar_version)
                 VALUES (%s, %s, %s, %s, %s)
             """, users)
+
+            session_rows = [
+                (key, user_id, datetime.fromtimestamp(expiry, timezone.utc))
+                for key, user_id, expiry in sessions
+            ]
             cursor.executemany("""
-                INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (%s, %s, %s)
-            """, [(key, user_id, datetime.fromtimestamp(expiry, timezone.utc)) for key, user_id, expiry in sessions])
+                INSERT INTO sessions (token_hash, user_id, expires_at)
+                VALUES (%s, %s, %s)
+            """, session_rows)
 
         db.execute("DELETE FROM sessions WHERE expires_at <= now()")
         db.execute("""
-            SELECT setval(pg_get_serial_sequence('users', 'id'),
-                          COALESCE((SELECT max(id) FROM users), 1),
-                          EXISTS (SELECT 1 FROM users))
+            SELECT setval(
+                pg_get_serial_sequence('users', 'id'),
+                COALESCE((SELECT max(id) FROM users), 1),
+                EXISTS (SELECT 1 FROM users)
+            )
         """)
         row = db.execute("SELECT count(*) AS total FROM sessions").fetchone()
         assert row is not None
