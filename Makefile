@@ -1,5 +1,6 @@
 PORT ?= 5174
 IMAGE ?= chess-backend:local
+PLATFORM ?= linux/arm64
 
 .PHONY: install database backend frontend check image build serve infra-check
 
@@ -11,7 +12,7 @@ database:
 		up -d --wait postgres
 
 backend: image
-	IMAGE="$(IMAGE)" docker compose -f infra/local/compose.yaml \
+	IMAGE="$(IMAGE)" PLATFORM="$(PLATFORM)" docker compose -f infra/local/compose.yaml \
 		up -d --no-build backend
 
 frontend:
@@ -21,7 +22,7 @@ check:
 	npm run --prefix apps/frontend check
 
 image:
-	docker build --platform linux/amd64 -t "$(IMAGE)" apps/backend
+	docker build --platform "$(PLATFORM)" -t "$(IMAGE)" apps/backend
 
 build:
 	npm run --prefix apps/frontend build
@@ -32,3 +33,4 @@ serve:
 infra-check:
 	cfn-lint infra/foundation/template.yaml \
 		infra/backend/template.yaml
+	python3 -m unittest infra.test_migrate

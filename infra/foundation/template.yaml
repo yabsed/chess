@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Small Chess infrastructure; application releases use a separate backend stack.
+Description: Small Chess on public ARM hosts; CloudFront, ALB and private PostgreSQL stay managed.
 
 
 Metadata:
@@ -20,6 +20,10 @@ Parameters:
     Default:        chess-github-deploy
     AllowedPattern: '[A-Za-z0-9+=,.@_-]+'
     Description:    Existing API-only IAM user; its access key stays in GitHub Secrets.
+
+  ECSImageId:
+    Type:        AWS::EC2::Image::Id
+    Description: Pinned ECS-optimized AL2023 ARM64 AMI; resolved once by deploy.sh.
 
 
 Resources:
@@ -181,38 +185,7 @@ Resources:
       SubnetId:     !Ref PublicSubnetB
 
 
-  # Private outbound access: one NAT preserves the current cost and availability tradeoff.
-  NatAddress:
-    Type:      AWS::EC2::EIP
-    DependsOn: GatewayAttachment
-    DeletionPolicy:      Retain
-    UpdateReplacePolicy: Retain
-
-    Properties:
-      Domain: vpc
-
-      Tags:
-        - Key:   Name
-          Value: !Sub '${ECSClusterName}-eip-${AWS::Region}a'
-
-
-  NatGateway:
-    Type: AWS::EC2::NatGateway
-    DeletionPolicy:      Retain
-    UpdateReplacePolicy: Retain
-
-    Properties:
-      # Keep the imported GetAtt form; changing its syntax plans a NAT replacement.
-      AllocationId:
-        Fn::GetAtt: [NatAddress, AllocationId]
-      SubnetId: !Ref PublicSubnetA
-
-      Tags:
-        - Key:   Name
-          Value: !Sub '${ECSClusterName}-nat-public1-${AWS::Region}a'
-
-
-  # Private subnet A route
+  # ALB and PostgreSQL stay private; neither subnet needs a default internet route.
 
   PrivateRoutesA:
     Type: AWS::EC2::RouteTable
@@ -225,17 +198,6 @@ Resources:
       Tags:
         - Key:   Name
           Value: !Sub '${ECSClusterName}-rtb-private1-${AWS::Region}a'
-
-
-  PrivateInternetRouteA:
-    Type: AWS::EC2::Route
-    DeletionPolicy:      Retain
-    UpdateReplacePolicy: Retain
-
-    Properties:
-      RouteTableId:         !Ref PrivateRoutesA
-      DestinationCidrBlock: 0.0.0.0/0
-      NatGatewayId:         !Ref NatGateway
 
 
   PrivateAssociationA:
@@ -263,17 +225,6 @@ Resources:
           Value: !Sub '${ECSClusterName}-rtb-private2-${AWS::Region}b'
 
 
-  PrivateInternetRouteB:
-    Type: AWS::EC2::Route
-    DeletionPolicy:      Retain
-    UpdateReplacePolicy: Retain
-
-    Properties:
-      RouteTableId:         !Ref PrivateRoutesB
-      DestinationCidrBlock: 0.0.0.0/0
-      NatGatewayId:         !Ref NatGateway
-
-
   PrivateAssociationB:
     Type: AWS::EC2::SubnetRouteTableAssociation
     DeletionPolicy:      Retain
@@ -296,6 +247,7 @@ Resources:
       VpcEndpointType: Gateway
       ServiceName:     !Sub 'com.amazonaws.${AWS::Region}.s3'
       RouteTableIds:
+        - !Ref PublicRoutes
         - !Ref PrivateRoutesA
         - !Ref PrivateRoutesB
 
@@ -414,13 +366,12 @@ Resources:
 
   TargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    DeletionPolicy:      Retain
-    UpdateReplacePolicy: Retain
 
     Properties:
-      Name:       !Sub '${ECSClusterName}-backend-tg'
+      # A new name permits replacement of the old awsvpc target group.
+      Name:       !Sub '${ECSClusterName}-bridge-tg'
       VpcId:      !Ref VPC
-      TargetType: ip
+      TargetType: instance
       Protocol:   HTTP
       Port:       8000
 
@@ -552,8 +503,9 @@ Resources:
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol:            tcp
-          FromPort:              8000
-          ToPort:                8000
+          # ECS registers each bridge task's dynamic host port with the ALB.
+          FromPort:              32768
+          ToPort:                65535
           SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
 
 
@@ -613,21 +565,29 @@ Resources:
 
     Properties:
       LaunchTemplateData:
-        # Pin the reviewed AL2023 x86-64 AMI; upgrades are explicit template changes.
-        ImageId:      ami-003b37e6c99f7531d
-        InstanceType: t3.small
+        ImageId:      !Ref ECSImageId
+        InstanceType: t4g.small
         IamInstanceProfile:
           Arn: !GetAtt InstanceProfile.Arn
 
         NetworkInterfaces:
-          - AssociatePublicIpAddress: false
+          - AssociatePublicIpAddress: true
             DeviceIndex:              0
             DeleteOnTermination:      true
             Groups:
               - !Ref BackendSecurityGroup
         MetadataOptions:
           HttpTokens:              required
+          # Bridge containers cannot obtain a host IAM token through the extra hop.
           HttpPutResponseHopLimit: 1
+
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeType:          gp3
+              VolumeSize:          30
+              Encrypted:           true
+              DeleteOnTermination: true
 
         UserData:
           Fn::Base64: !Sub |
@@ -636,33 +596,36 @@ Resources:
             cat >> /etc/ecs/ecs.config <<'EOF'
             ECS_CLUSTER=${ECSCluster}
             ECS_ENABLE_AWSLOGS_EXECUTIONROLE_OVERRIDE=true
-            ECS_AWSVPC_BLOCK_IMDS=true
+            ECS_RESERVED_MEMORY=256
             EOF
 
 
   ECSAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn: [PublicInternetRoute, PublicAssociationA, PublicAssociationB]
 
     UpdatePolicy:
       AutoScalingInstanceRefresh:
         Strategy: Rolling
         Preferences:
-          MinHealthyPercentage: 100
-          MaxHealthyPercentage: 200
-          InstanceWarmup:       300
-          SkipMatching:         true
+          MinHealthyPercentage:      100
+          MaxHealthyPercentage:      200
+          InstanceWarmup:            300
+          SkipMatching:              true
+          ScaleInProtectedInstances: Refresh
 
     Properties:
       # ECS managed scaling owns DesiredCapacity.
       MinSize: '1'
       MaxSize: '2'
+      NewInstancesProtectedFromScaleIn: true
 
       LaunchTemplate:
         LaunchTemplateId: !Ref ECSLaunchTemplate
         Version:          !GetAtt ECSLaunchTemplate.LatestVersionNumber
       VPCZoneIdentifier:
-        - !Ref PrivateSubnetA
-        - !Ref PrivateSubnetB
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
 
       Tags:
         - Key:               Name
@@ -679,7 +642,7 @@ Resources:
         ManagedScaling:
           Status:         ENABLED
           TargetCapacity: 100
-        ManagedTerminationProtection: DISABLED
+        ManagedTerminationProtection: ENABLED
         ManagedDraining:              ENABLED
 
 
@@ -876,6 +839,10 @@ Resources:
 
 
 Outputs:
+  ComputeArchitecture:
+    Description: Used by deploy.sh to guard the one-time migration.
+    Value: arm64
+
   ECSCluster:
     Value: !Ref ECSCluster
     Export:

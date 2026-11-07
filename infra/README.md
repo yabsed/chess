@@ -14,7 +14,7 @@ or the workflow run this sequence when `AWS_DEPLOY_ENABLED=true`:
 ```text
 Check templates
     ↓
-Build backend image · test HTTP and WebSocket
+Build ARM backend image · test HTTP and WebSocket
     ↓
 Deploy foundation
     ↓
@@ -28,6 +28,73 @@ backend release. Foundation-only changes also build and release the backend.
 Pull requests only run checks. `AWS_DEPLOY_ENABLED` controls both deployments;
 checks still run when it is disabled. To retry manually, run **AWS** on `main`
 in GitHub Actions. Deployments share a concurrency group and do not overlap.
+
+## Runtime
+
+```text
+Browser → CloudFront → private ALB → ECS container → private PostgreSQL
+                                       │
+                                t4g.small · 2 GiB
+                                public subnet / IPv4
+                                       │
+                              ECR, logs and secrets
+```
+
+The host reaches public AWS endpoints through the internet gateway, without NAT.
+Its security group accepts app connections only from the ALB. The ALB uses the
+host's private address and the dynamic port registered by ECS; the container still
+listens on port 8000. RDS keeps its private subnets and existing data.
+
+The task keeps its 1 GiB memory limit. ECS reserves 256 MiB for the host and agent,
+so two tasks do not fit on one host. During a release, managed scaling can add a
+second host, start the new task, then drain the old one. Empty capacity scales in
+after a delay. Normal capacity is one host; the maximum is two.
+
+`deploy.sh` resolves the regional ECS-optimized AL2023 ARM64 AMI once and stores
+its ID in the `ECSImageId` stack parameter. Later deployments reuse that ID.
+To upgrade the AMI, explicitly update that parameter. Instance refresh and managed
+draining replace the hosts; occupied hosts are protected from ordinary scale-in.
+
+## First ARM deployment
+
+The first transition accepts downtime. Use **AWS → Run workflow → main**, with
+`migrate` checked and `AWS_DEPLOY_ENABLED=true`. Normal pushes intentionally stop
+before infrastructure changes until this migration has been prepared.
+
+After the ARM image passes checks, [migrate.py](migrate.py) performs these steps:
+
+1. Check the account, backend resources and target-group export consumers.
+2. Save the applied templates and stack parameters in the `before-arm` artifact.
+3. Make only the old NAT, EIP, default private routes, target group and backend
+   service disposable. Database retention and its stack policy stay intact.
+4. Delete the backend stack, stopping the service and releasing its imports.
+
+The workflow then deploys foundation and backend as usual. Foundation removes the
+NAT and EIP, replaces the IP target group with an instance target group, and moves
+the hosts to ARM/public subnets. Backend is recreated with the tested ARM image.
+The removed resources have `Delete` policies before removal, so they do not remain
+as retained, billable resources. Old retained task definitions contain no running
+compute.
+
+The migration runs with the infrastructure credentials. The external permission
+stack must allow reading both templates, `cloudformation:ListImports`, updating
+and deleting the backend stack, and passing its existing execution role. Normal
+foundation deployment also needs `ssm:GetParameter` on the public ECS ARM AMI path.
+Review these operator-managed permissions before the first run.
+
+If migration preparation fails before stack deletion, the old service remains.
+If the backend stack was deleted, fix the failed step and rerun with **migrate
+unchecked**. The preparation marker and saved templates allow recovery without
+repeating the deletion. Do not run overlapping manual stack operations.
+
+To restore the former architecture after a failed transition, first remove any
+recreated ARM backend service and stack to release its imports. Use an operator
+session to deploy `foundation-before.json` from the artifact with its saved
+parameters, then `backend-before.json` with its saved image URI and parameters.
+Restore foundation first: an x86 image cannot run on the new ARM hosts. This
+recreates the retired NAT infrastructure and resumes its charges. RDS is preserved
+in either direction. Once the ARM release succeeds, use ordinary image rollback
+below and leave `migrate` unchecked.
 
 ## Settings
 
@@ -54,10 +121,12 @@ Keep credentials and secret values out of Git.
 
 ## Checks
 
-The workflow runs `cfn-lint` on both templates, builds the backend image,
-starts it with a fresh PostgreSQL database, and checks HTTP and the Engine.IO
-WebSocket handshake. After deployment it checks the service's task definition
-and the public endpoint.
+The workflow runs `cfn-lint` on both templates and tests the migration's destructive
+boundaries without AWS access. An `ubuntu-24.04-arm` runner builds and tests the
+ARM image with a fresh PostgreSQL database. The backend has the same 1 GiB limit
+and read-only filesystem as its ECS task. Checks cover HTTP and the Engine.IO
+WebSocket handshake; they are not a production load benchmark. After deployment
+the workflow checks the service's task definition and public endpoint.
 
 To run the checks locally, use Python 3.11+ and curl:
 
@@ -71,13 +140,17 @@ python3 -m infra.backend.smoke http://127.0.0.1:8000
 
 The smoke command needs a running backend. CI uses [local/compose.yaml](local/compose.yaml)
 to start it with Docker Compose.
-These checks do not test SQL migrations or enforce custom infrastructure policies.
+These checks do not test SQL migrations or run account-aware CloudFormation validation.
 
 ## Local containers
 
 `make backend` starts the backend and PostgreSQL using [local/compose.yaml](local/compose.yaml).
 The Compose project is named `chess` to keep existing local volume names.
 CI overrides that name for each run.
+
+ARM is the deployment default. On an x86 development machine, run
+`make backend PLATFORM=linux/amd64`. This changes only the local build and Compose
+platform; the deployment script accepts ARM images only.
 
 For local settings, copy [local/.env.example](local/.env.example) to `local/.env`.
 Compose builds the database URL from `CHESS_POSTGRES_PASSWORD`; the defaults work
@@ -94,8 +167,9 @@ docker compose -f infra/local/compose.yaml --profile public \
 
 ## Resource changes
 
-Keep existing resource logical IDs and cross-stack exports. EC2 capacity limits
-live in foundation; the container count is `DesiredCount` in backend.
+Keep existing resource logical IDs and cross-stack export names. The first ARM
+migration releases backend imports before replacing the target group. EC2
+capacity limits live in foundation; the container count is `DesiredCount` in backend.
 
 The database keeps encryption, backups, deletion protection and retention.
 [stack-policy.json](foundation/stack-policy.json) blocks its replacement and removal
@@ -111,7 +185,7 @@ rollouts. A failed public endpoint check fails the workflow for investigation.
 ## Roll back an image
 
 Use an operator session. Set `AWS_DEFAULT_REGION`, `FOUNDATION_STACK`,
-`BACKEND_STACK` and `PREVIOUS_IMAGE` (the earlier `repository@sha256:...` URI).
+`BACKEND_STACK` and `PREVIOUS_IMAGE` (an earlier ARM `repository@sha256:...` URI).
 The deployed image URI is recorded in each successful AWS run's summary.
 
 ```sh

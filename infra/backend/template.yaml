@@ -37,11 +37,15 @@ Resources:
       Family:
         Fn::ImportValue: !Sub '${FoundationStack}-Cluster'
 
-      NetworkMode:             awsvpc
+      NetworkMode:             bridge
       RequiresCompatibilities: [EC2]
 
       Cpu:    '512'
       Memory: '1024'
+
+      RuntimePlatform:
+        CpuArchitecture:       ARM64
+        OperatingSystemFamily: LINUX
 
       ExecutionRoleArn:
         Fn::ImportValue: !Sub '${FoundationStack}-ExecutionRole'
@@ -59,7 +63,7 @@ Resources:
 
           PortMappings:
             - ContainerPort: 8000
-              HostPort:      8000
+              HostPort:      0
               Protocol:      tcp
 
           Environment:
@@ -147,18 +151,6 @@ Resources:
 
         - Type:  binpack
           Field: MEMORY
-
-      NetworkConfiguration:
-        AwsvpcConfiguration:
-          AssignPublicIp: DISABLED
-
-          Subnets:
-            Fn::Split:
-              - ','
-              - Fn::ImportValue: !Sub '${FoundationStack}-PrivateSubnets'
-
-          SecurityGroups:
-            - Fn::ImportValue: !Sub '${FoundationStack}-BackendSecurityGroup'
 
       LoadBalancers:
         - ContainerName: backend

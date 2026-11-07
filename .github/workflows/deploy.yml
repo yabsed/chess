@@ -17,6 +17,11 @@ on:
       - .github/workflows/deploy.yml
 
   workflow_dispatch:
+    inputs:
+      migrate:
+        description: 'First ARM deployment: stop the old backend and remove NAT retention'
+        type:        boolean
+        default:     false
 
 permissions:
   contents: read
@@ -31,7 +36,7 @@ defaults:
 
 jobs:
   deploy:
-    runs-on:         ubuntu-latest
+    runs-on:         ubuntu-24.04-arm
     timeout-minutes: 180
 
     env:
@@ -51,7 +56,7 @@ jobs:
           pip install -r infra/requirements.txt
           make infra-check
 
-      - name: Build backend image
+      - name: Build ARM backend image
         run:  make image IMAGE="$IMAGE"
 
       - name: Test HTTP and WebSocket
@@ -66,6 +71,30 @@ jobs:
         run:  |
           docker compose -f infra/local/compose.yaml \
             down --volumes
+
+
+      - name: Prepare first ARM deployment (service stops here)
+        if:   >-
+          github.ref == 'refs/heads/main'
+          && vars.AWS_DEPLOY_ENABLED == 'true'
+          && inputs.migrate
+        run:  python3 -m infra.migrate --backup-dir "$RUNNER_TEMP/chess-before-arm"
+
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_INFRA_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_INFRA_SECRET_ACCESS_KEY }}
+
+          FOUNDATION_ROLE: ${{ vars.FOUNDATION_ROLE }}
+          BACKEND_STACK:   ${{ vars.BACKEND_STACK }}
+
+      - name: Save migration recovery files
+        if:   always() && inputs.migrate
+        uses: actions/upload-artifact@v4
+        with:
+          name:            before-arm
+          path:            ${{ runner.temp }}/chess-before-arm
+          if-no-files-found: ignore
+          retention-days:  7
 
 
       - name: Deploy foundation
