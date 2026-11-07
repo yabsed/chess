@@ -1,46 +1,49 @@
-name: Backend
+name: AWS
 
 on:
   push:
     branches: [main]
     paths:
       - apps/backend/**
-      - infra/backend/**
-      - infra/requirements.txt
+      - infra/**
       - Makefile
       - compose.yaml
-      - .github/workflows/backend.yml
+      - .github/workflows/deploy.yml
 
   pull_request:
     paths:
       - apps/backend/**
-      - infra/backend/**
-      - infra/requirements.txt
+      - infra/**
       - Makefile
       - compose.yaml
-      - .github/workflows/backend.yml
+      - .github/workflows/deploy.yml
 
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group:              aws-chess-${{ github.ref }}
+  cancel-in-progress: false
+
 defaults:
   run:
     shell: bash
 
 jobs:
-  backend:
+  deploy:
     runs-on:         ubuntu-latest
-    timeout-minutes: 60
-
-    concurrency:
-      group:              aws-chess-${{ github.ref }}
-      cancel-in-progress: false
+    timeout-minutes: 180
 
     env:
       IMAGE:                chess-backend:${{ github.sha }}
       COMPOSE_PROJECT_NAME: chess-ci-${{ github.run_id }}-${{ github.run_attempt }}
+
+      AWS_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+      AWS_PAGER:          ''
+      AWS_ACCOUNT_ID:     ${{ vars.AWS_ACCOUNT_ID }}
+      FOUNDATION_STACK:   ${{ vars.FOUNDATION_STACK }}
 
     steps:
       - uses: actions/checkout@v4
@@ -50,7 +53,7 @@ jobs:
           pip install -r infra/requirements.txt
           make infra-check
 
-      - name: Build image
+      - name: Build backend image
         run:  make image IMAGE="$IMAGE"
 
       - name: Test HTTP and WebSocket
@@ -63,18 +66,27 @@ jobs:
         if:   always()
         run:  docker compose down --volumes
 
-      - name: Deploy and check backend
+
+      - name: Deploy foundation
+        if:   >-
+          github.ref == 'refs/heads/main'
+          && vars.AWS_DEPLOY_ENABLED == 'true'
+        run:  bash infra/foundation/deploy.sh
+
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_INFRA_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_INFRA_SECRET_ACCESS_KEY }}
+
+          FOUNDATION_ROLE: ${{ vars.FOUNDATION_ROLE }}
+
+      - name: Deploy backend and check public API
         if:   >-
           github.ref == 'refs/heads/main'
           && vars.AWS_DEPLOY_ENABLED == 'true'
         run:  bash infra/backend/deploy.sh
 
         env:
-          AWS_DEFAULT_REGION:    ${{ vars.AWS_REGION }}
-          AWS_PAGER:             ''
-          AWS_ACCOUNT_ID:        ${{ vars.AWS_ACCOUNT_ID }}
           AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
-          FOUNDATION_STACK: ${{ vars.FOUNDATION_STACK }}
-          BACKEND_STACK:    ${{ vars.BACKEND_STACK }}
+          BACKEND_STACK: ${{ vars.BACKEND_STACK }}

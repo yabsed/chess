@@ -1,29 +1,43 @@
 # Deployment
 
-Read the workflow for the order, `deploy.sh` for the commands, and `template.yaml`
-for the resources.
+Read the [AWS workflow](../.github/workflows/deploy.yml) for the order,
+`deploy.sh` for the commands, and `template.yaml` for the resources.
 
-| Deployment | Workflow | Template |
-| --- | --- | --- |
-| Foundation | [Infrastructure](../.github/workflows/infra.yml) | [Network, EC2, load balancer, database and roles](foundation/template.yaml) |
-| Backend | [Backend](../.github/workflows/backend.yml) | [Container settings and ECS service](backend/template.yaml) |
+| Deployment | Template |
+| --- | --- |
+| Foundation | [Network, EC2, load balancer, database and roles](foundation/template.yaml) |
+| Backend | [Container settings and ECS service](backend/template.yaml) |
 
-Backend changes on `main` deploy automatically when `AWS_DEPLOY_ENABLED=true`.
-For foundation changes, merge to `main`, then run **Infrastructure** in GitHub Actions.
-A push alone does not deploy foundation. Pull requests only run checks.
+Pushes to `main` that change `apps/backend/`, `infra/`, `Makefile`, `compose.yaml`
+or the workflow run this sequence when `AWS_DEPLOY_ENABLED=true`:
 
-Deploy required foundation changes before releasing the backend. The workflows
-share a concurrency group, but neither starts the other.
+```text
+Check templates
+    ↓
+Build backend image · test HTTP and WebSocket
+    ↓
+Deploy foundation
+    ↓
+Deploy backend · check public API
+```
+
+Every deployment runs foundation first. An empty CloudFormation change set
+succeeds without updating resources; a failed foundation deployment stops the
+backend release. Foundation-only changes also build and release the backend.
+
+Pull requests only run checks. `AWS_DEPLOY_ENABLED` controls both deployments;
+checks still run when it is disabled. To retry manually, run **AWS** on `main`
+in GitHub Actions. Deployments share a concurrency group and do not overlap.
 
 ## Settings
 
-The workflows read GitHub variables and Secrets.
+The workflow reads GitHub variables and Secrets.
 
 | Setting | Purpose |
 | --- | --- |
 | Secret `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Backend deployment credentials |
 | Secret `AWS_INFRA_ACCESS_KEY_ID` / `AWS_INFRA_SECRET_ACCESS_KEY` | Foundation deployment credentials |
-| Variable `AWS_DEPLOY_ENABLED` | `true` enables backend releases |
+| Variable `AWS_DEPLOY_ENABLED` | `true` enables foundation and backend deployment |
 | Variable `AWS_REGION` | AWS region |
 | Variable `AWS_ACCOUNT_ID` | Account checked before deployment |
 | Variable `FOUNDATION_STACK` | Existing foundation stack |
@@ -40,7 +54,7 @@ Keep credentials and secret values out of Git.
 
 ## Checks
 
-Both workflows run `cfn-lint` on the two templates. Backend also builds the image,
+The workflow runs `cfn-lint` on both templates, builds the backend image,
 starts it with a fresh PostgreSQL database, and checks HTTP and the Engine.IO
 WebSocket handshake. After deployment it checks the service's task definition
 and the public endpoint.
@@ -75,7 +89,7 @@ rollouts. A failed public endpoint check fails the workflow for investigation.
 
 Use an operator session. Set `AWS_DEFAULT_REGION`, `FOUNDATION_STACK`,
 `BACKEND_STACK` and `PREVIOUS_IMAGE` (the earlier `repository@sha256:...` URI).
-The deployed image URI is recorded in each successful Backend run's summary.
+The deployed image URI is recorded in each successful AWS run's summary.
 
 ```sh
 aws sts get-caller-identity
