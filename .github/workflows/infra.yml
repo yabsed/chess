@@ -27,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate infrastructure
+      - name: Check templates and deployment logic
         run: |
           pip install -r infra/requirements.txt
           make infra-check
@@ -49,13 +49,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install deployment tools
+        run: pip install -r infra/requirements.txt
+
       - name: Plan or apply
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_INFRA_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_INFRA_SECRET_ACCESS_KEY }}
           ACTION: ${{ inputs.action }}
           CHANGE_SET: ${{ inputs.change_set }}
-        run: bash infra/foundation/deploy.sh "$ACTION" "$CHANGE_SET"
+        run: python3 -m infra.foundation.deploy "$ACTION" "$CHANGE_SET"
 
       - name: Save plan
         if: inputs.action == 'plan' && !cancelled()

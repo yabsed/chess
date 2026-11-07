@@ -32,3 +32,4 @@ infra-check:
 		infra/foundation/template.yaml \
 		infra/bootstrap/access.yaml
 	python3 infra/validate.py
+	python3 -m unittest discover -s infra/tests

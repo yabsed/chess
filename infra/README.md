@@ -13,6 +13,10 @@ manage existing production resources; preserve their logical IDs. They are not a
 empty-account installer. The database, its credentials and API-only deployment
 users existed before CloudFormation adoption.
 
+Workflows select when to run and which credentials to pass. Python programs hold
+deployment state and make the checks and recovery decisions. CloudFormation YAML
+declares the resources. The short `backend/smoke.sh` checks HTTP and WebSockets.
+
 ```mermaid
 flowchart LR
     frontend[Frontend change on main] --> pages[Check, build, publish Pages]
@@ -60,7 +64,7 @@ Actions runs too: removing a value from current files does not remove earlier co
 
 Merge backend changes to `main`. With deployment enabled, Backend builds an image,
 tests it with PostgreSQL and checks HTTP and WebSockets. Then
-[`release.sh`](backend/release.sh) publishes that image, deploys its immutable ECR
+[`release.py`](backend/release.py) publishes that image, deploys its immutable ECR
 digest and verifies the actual ECS tasks and public endpoint.
 
 Release stops if the checked-in foundation differs from the deployed template.
@@ -70,6 +74,8 @@ as resource changes. Resource settings and resource metadata do.
 ECS handles failed rollouts. If post-deployment checks fail, the release script
 restores the previous template and all its parameters, verifies the restoration,
 and still fails the run. A first release has no previous version to restore.
+The previous release stays together as a template and a parameter dictionary.
+CloudFormation deployment failures do not enter this post-deployment restore path.
 
 Revert an application commit to release an older version through CI. Container
 rollback does not undo database writes; schema changes must remain compatible
@@ -86,6 +92,8 @@ Apply requires the same stack, commit and template as the reviewed plan. It allo
 only updates to existing non-IAM resources without replacement. Additions,
 removals, replacements and IAM changes need an operator-reviewed migration and
 appropriate permissions. A stack policy also blocks database replacement and removal.
+[`deploy.py`](foundation/deploy.py) reads the entire change set before any write;
+each rejection condition appears beside the apply operation.
 
 AWS's explicit no-change failure reason is treated as a successful no-op plan.
 Other errors fail the run. An available plan can have no resource changes when only
@@ -93,9 +101,9 @@ stack-level settings change; review its description before applying it.
 
 ## Run locally
 
-Run commands from the repository root on Linux with Bash 4+, AWS CLI, Git, jq, curl
-and Python available. Publishing a local image also needs Docker. Install the validation
-dependencies before checking templates or releasing:
+Run commands from the repository root on Linux with Bash, AWS CLI v2, Git, jq, curl
+and Python 3.11+ available. Publishing a local image also needs Docker. Install the
+deployment and validation dependencies before checking templates or releasing:
 
 ```sh
 python3 -m venv /tmp/chess-infra
@@ -103,6 +111,10 @@ source /tmp/chess-infra/bin/activate
 pip install -r infra/requirements.txt
 make infra-check
 ```
+
+This checks the templates and runs deployment tests with simulated AWS responses.
+Tests cover rejected plans, image verification and full release restoration without
+AWS credentials or changes to live resources.
 
 For AWS operations, authenticate as the appropriate deployment user or operator.
 Copy `infra/production.env.example` to `infra/production.env`, fill in your target,
@@ -120,8 +132,8 @@ To register these non-secret settings in GitHub, run
 Publish an already built and tested local image, or deploy an existing digest:
 
 ```sh
-bash infra/backend/release.sh chess-backend:local
-bash infra/backend/release.sh --digest '<repository-uri>@sha256:<digest>'
+python3 -m infra.backend.release chess-backend:local
+python3 -m infra.backend.release --digest '<repository-uri>@sha256:<digest>'
 ```
 
 These are alternatives. The digest path needs no Docker; use the matching backend
@@ -130,8 +142,8 @@ template and keep the current foundation when restoring an older image.
 To plan or apply foundation changes locally:
 
 ```sh
-bash infra/foundation/deploy.sh plan
-bash infra/foundation/deploy.sh apply '<change-set-arn>'
+python3 -m infra.foundation.deploy plan
+python3 -m infra.foundation.deploy apply '<change-set-arn>'
 ```
 
 Review the printed plan files before apply. Local apply updates only the foundation;

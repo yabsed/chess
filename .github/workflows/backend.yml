@@ -6,7 +6,8 @@ on:
     paths:
       - apps/backend/**
       - infra/backend/**
-      - infra/foundation/check-applied.py
+      - infra/foundation/check_applied.py
+      - infra/tests/**
       - infra/requirements.txt
       - infra/validate.py
       - infra/safety.guard
@@ -18,7 +19,8 @@ on:
     paths:
       - apps/backend/**
       - infra/backend/**
-      - infra/foundation/check-applied.py
+      - infra/foundation/check_applied.py
+      - infra/tests/**
       - infra/requirements.txt
       - infra/validate.py
       - infra/safety.guard
@@ -59,7 +61,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate infrastructure
+      - name: Check templates and deployment logic
         run: |
           pip install -r infra/requirements.txt
           make infra-check
@@ -79,4 +81,4 @@ jobs:
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        run: bash infra/backend/release.sh "$IMAGE"
+        run: python3 -m infra.backend.release "$IMAGE"
