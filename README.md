@@ -4,7 +4,7 @@ Play chess in your browser. Find an opponent or invite a friend.
 
 **[Play chess → https://yabsed.github.io/chess/](https://yabsed.github.io/chess/)**
 
-![Small Chess game](image.png)
+![Small Chess game](docs/screenshot.png)
 
 ## Get started
 
@@ -35,9 +35,12 @@ make frontend
 `make backend` builds the backend image and starts it with PostgreSQL through
 Compose. The API runs on `127.0.0.1:8000`, PostgreSQL on `127.0.0.1:5432`.
 Local development and ECS use the same Python 3.14 image and startup command.
-After backend changes, run `make backend` again. To serve a single public server
-through Caddy, set `CHESS_IP` and `CHESS_ORIGIN` in `.env`, then run
-`docker compose --profile public up -d --build`.
+After backend changes, run `make backend` again.
+
+Container settings live in [infra/local/compose.yaml](infra/local/compose.yaml).
+Defaults work without an `.env` file. To customize them, copy
+[infra/local/.env.example](infra/local/.env.example) to `infra/local/.env`.
+For a single public server with Caddy, see [local containers](infra/README.md#local-containers).
 
 ```sh
 make check

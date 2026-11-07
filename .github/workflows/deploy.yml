@@ -7,7 +7,6 @@ on:
       - apps/backend/**
       - infra/**
       - Makefile
-      - compose.yaml
       - .github/workflows/deploy.yml
 
   pull_request:
@@ -15,7 +14,6 @@ on:
       - apps/backend/**
       - infra/**
       - Makefile
-      - compose.yaml
       - .github/workflows/deploy.yml
 
   workflow_dispatch:
@@ -58,13 +56,16 @@ jobs:
 
       - name: Test HTTP and WebSocket
         run:  |
-          docker compose up -d --no-build --wait postgres backend
+          docker compose -f infra/local/compose.yaml \
+            up -d --no-build --wait postgres backend
 
           python3 -m infra.backend.smoke http://127.0.0.1:8000
 
       - name: Clean up test containers
         if:   always()
-        run:  docker compose down --volumes
+        run:  |
+          docker compose -f infra/local/compose.yaml \
+            down --volumes
 
 
       - name: Deploy foundation
