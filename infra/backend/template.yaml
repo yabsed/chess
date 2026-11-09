@@ -28,7 +28,8 @@ Parameters:
 
 Resources:
 
-  TaskDefinition:
+  # CloudFront reaches the fixed host port over the VPC connection.
+  OriginTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
@@ -63,7 +64,7 @@ Resources:
 
           PortMappings:
             - ContainerPort: 8000
-              HostPort:      0
+              HostPort:      8000
               Protocol:      tcp
 
           Environment:
@@ -72,7 +73,7 @@ Resources:
 
             - Name:  FORWARDED_ALLOW_IPS
               Value:
-                Fn::ImportValue: !Sub '${FoundationStack}-ProxyCidrs'
+                Fn::ImportValue: !Sub '${FoundationStack}-OriginProxyCidrs'
 
           Secrets:
             - Name: CHESS_DATABASE_URL
@@ -104,8 +105,8 @@ Resources:
           StopTimeout: 30
 
 
-  # More replicas also need more host capacity during rolling deployments.
-  Service:
+  # Stop the previous task before binding the fixed port; deployments briefly interrupt service.
+  OriginService:
     Type: AWS::ECS::Service
     DeletionPolicy:      Retain
     UpdateReplacePolicy: Retain
@@ -115,56 +116,42 @@ Resources:
         Fn::Join:
           - ''
           - - Fn::ImportValue: !Sub '${FoundationStack}-Cluster'
-            - '-backend'
+            - '-backend-direct'
 
       Cluster:
         Fn::ImportValue: !Sub '${FoundationStack}-Cluster'
 
-      TaskDefinition: !Ref TaskDefinition
+      TaskDefinition: !Ref OriginTaskDefinition
       DesiredCount:   1
 
-      CapacityProviderStrategy:
-        - CapacityProvider:
-            Fn::ImportValue: !Sub '${FoundationStack}-CapacityProvider'
-          Weight: 1
-          Base:   0
+      LaunchType: EC2
 
       DeploymentController:
         Type: ECS
 
       DeploymentConfiguration:
-        MinimumHealthyPercent: 100
-        MaximumPercent:        200
+        MinimumHealthyPercent: 0
+        MaximumPercent:        100
 
         DeploymentCircuitBreaker:
           Enable:   true
           Rollback: true
 
-      HealthCheckGracePeriodSeconds: 120
       EnableECSManagedTags:          true
       EnableExecuteCommand:          false
-      AvailabilityZoneRebalancing:   ENABLED
+      AvailabilityZoneRebalancing:   DISABLED
 
-      PlacementStrategies:
-        - Type:  spread
-          Field: attribute:ecs.availability-zone
-
-        - Type:  binpack
-          Field: MEMORY
-
-      LoadBalancers:
-        - ContainerName: backend
-          ContainerPort: 8000
-          TargetGroupArn:
-            Fn::ImportValue: !Sub '${FoundationStack}-TargetGroup'
+      PlacementConstraints:
+        - Type:       memberOf
+          Expression: attribute:chess.origin == true
 
 
 Outputs:
   TaskDefinition:
-    Value: !Ref TaskDefinition
+    Value: !Ref OriginTaskDefinition
 
   Service:
-    Value: !GetAtt Service.Name
+    Value: !GetAtt [OriginService, Name]
 
   ImageUri:
     Value: !Ref ImageUri

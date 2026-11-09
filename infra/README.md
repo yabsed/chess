@@ -5,7 +5,7 @@ Read the [AWS workflow](../.github/workflows/deploy.yml) for the order,
 
 | Deployment | Template |
 | --- | --- |
-| Foundation | [Network, EC2, load balancer, database and roles](foundation/template.yaml) |
+| Foundation | [Network, EC2, CloudFront, database and roles](foundation/template.yaml) |
 | Backend | [Container settings and ECS service](backend/template.yaml) |
 
 Pushes to `main` that change `apps/backend/`, `infra/`, `Makefile`
@@ -21,38 +21,34 @@ Deploy foundation
 Deploy backend · check public API
 ```
 
-Every deployment runs foundation first. An empty CloudFormation change set
-succeeds without updating resources; a failed foundation deployment stops the
-backend release. Foundation-only changes also build and release the backend.
-
-Pull requests only run checks. `AWS_DEPLOY_ENABLED` controls both deployments;
-checks still run when it is disabled. To retry manually, run **AWS** on `main`
-in GitHub Actions. Deployments share a concurrency group and do not overlap.
+Foundation runs first; a failure stops the release. Pull requests run checks only.
+To retry, run **AWS** on `main` in GitHub Actions. Deployments do not overlap.
 
 ## Runtime
 
 ```text
-Browser → CloudFront → private ALB → ECS container → private PostgreSQL
-                                       │
-                                t4g.small · 2 GiB
-                                public subnet / IPv4
-                                       │
-                              ECR, logs and secrets
+Browser ──HTTPS── CloudFront ──VPC── EC2 / ECS :8000 ── RDS
+                                    t4g.small         private
 ```
 
-The host reaches public AWS endpoints through the internet gateway, without NAT.
-Its security group accepts app connections only from the ALB. The ALB uses the
-host's private address and the dynamic port registered by ECS; the container still
-listens on port 8000. RDS keeps its private subnets and existing data.
+One EC2 host runs `chess-backend-direct`. Port 8000 accepts traffic only from
+CloudFront's VPC origins security group. Public IPv4 provides outbound access to
+ECR, logs and secrets. There is no ALB or NAT gateway.
 
-The task keeps its 1 GiB memory limit. ECS reserves 256 MiB for the host and agent,
-so two tasks do not fit on one host. During a release, managed scaling can add a
-second host, start the new task, then drain the old one. Empty capacity scales in
-after a delay. Normal capacity is one host; the maximum is two.
+| Resource | Configuration |
+| --- | --- |
+| EC2 | One ARM `t4g.small`; 256 MiB reserved for the host |
+| ECS | One task; 1 GiB; fixed host port 8000 |
+| Placement | Host attribute `chess.origin=true` |
+| RDS | Existing private database, data and protections |
 
-The `ECSImageId` stack parameter pins the ECS-optimized AL2023 ARM64 AMI.
-Deployments reuse its existing value. Instance refresh and managed draining replace
-the hosts; occupied hosts are protected from ordinary scale-in.
+**Deployments briefly interrupt service.** ECS stops the old task before starting
+the new one. Health checks and deployment rollback remain enabled; WebSocket
+clients must reconnect. Keep `DesiredCount: 1` with this fixed port.
+
+ECS restarts failed tasks. Host failure needs operator recovery: there is no
+Auto Scaling group. AMI changes replace the host and update the CloudFront origin;
+schedule downtime until both are ready.
 
 ## Settings
 
@@ -69,23 +65,20 @@ The workflow reads GitHub variables and Secrets.
 | Variable `FOUNDATION_ROLE` | Foundation CloudFormation execution role |
 | Variable `BACKEND_STACK` | Backend stack, named `<ECS cluster>-backend` |
 
-An operator manages deployment credentials and the existing
-`chess-deployment-access` permission stack outside this repository. New resources
-or IAM changes may require an operator to update those permissions first.
-Existing stack parameters are reused during deployment.
+The operator-owned `chess-deployment-access` stack grants deployment permissions,
+including the direct EC2 origin and `chess-backend-direct` service. Update that
+stack when new permissions are needed; the foundation role cannot edit IAM.
+Deployments reuse existing stack parameters.
 
-The database URL stays in Secrets Manager and is injected when a task starts.
-Keep credentials and secret values out of Git.
+The database URL stays in Secrets Manager and is injected at task startup.
 
 ## Checks
 
-The workflow runs `cfn-lint` on both templates. An `ubuntu-24.04-arm` runner builds
-and tests the ARM image with a fresh PostgreSQL database. The backend has the same 1 GiB limit
-and read-only filesystem as its ECS task. Checks cover HTTP and the Engine.IO
-WebSocket handshake; they are not a production load benchmark. After deployment
-the workflow checks the service's task definition and public endpoint.
+CI lints both templates, builds an ARM image, and checks HTTP and the Engine.IO
+WebSocket handshake against a fresh PostgreSQL database. Deployment then checks
+ECS rollout completion and the public API. SQL migrations and load tests are separate.
 
-To run the checks locally, use Python 3.11+ and curl:
+Locally, use Python 3.11+ and curl:
 
 ```sh
 python3 -m venv /tmp/chess-infra
@@ -97,13 +90,10 @@ python3 -m infra.backend.smoke http://127.0.0.1:8000
 
 The smoke command needs a running backend. CI uses [local/compose.yaml](local/compose.yaml)
 to start it with Docker Compose.
-These checks do not test SQL migrations or run account-aware CloudFormation validation.
 
 ## Local containers
 
 `make backend` starts the backend and PostgreSQL using [local/compose.yaml](local/compose.yaml).
-The Compose project is named `chess` to keep existing local volume names.
-CI overrides that name for each run.
 
 ARM is the deployment default. On an x86 development machine, run
 `make backend PLATFORM=linux/amd64`. This changes only the local build and Compose
@@ -124,23 +114,17 @@ docker compose -f infra/local/compose.yaml --profile public \
 
 ## Resource changes
 
-Keep existing resource logical IDs and cross-stack export names. EC2
-capacity limits live in foundation; the container count is `DesiredCount` in backend.
+Preserve resource logical IDs and cross-stack exports. Host settings live in
+foundation; task settings live in backend.
 
-The database keeps encryption, backups, deletion protection and retention.
-[stack-policy.json](foundation/stack-policy.json) blocks its replacement and removal
-during foundation updates.
+RDS retains encryption, backups and deletion protection.
+[stack-policy.json](foundation/stack-policy.json) blocks replacement and removal.
+[models.py](../apps/backend/app/models.py) creates missing tables at startup;
+column changes need a SQL migration before releasing dependent code.
 
-Backend tables are declared in [models.py](../apps/backend/app/models.py).
-Startup creates missing tables; it does not alter existing columns.
-SQL schema changes need their own migration before deploying code that requires them.
-
-CloudFormation handles failed stack updates; ECS rolls back failed container
-rollouts. A failed public endpoint check fails the workflow for investigation.
-
-For initial foundation provisioning, supply `ECSImageId` explicitly using an
-ECS-optimized AL2023 ARM64 AMI from the deployment region. The workflow updates
-the existing stacks; account setup and execution roles are managed by an operator.
+These templates update the existing installation. Account setup is operator-owned.
+Foundation requires a pinned ARM64 `ECSImageId` and the VPC's existing
+`CloudFront-VPCOrigins-Service-SG` as `CloudFrontOriginSecurityGroup`.
 
 To upgrade the host AMI, use an operator session with `AWS_DEFAULT_REGION`,
 `AWS_ACCOUNT_ID`, `FOUNDATION_STACK`, `FOUNDATION_ROLE` and the reviewed
@@ -191,6 +175,10 @@ Separate property groups with one blank line and resources with two. Align nearb
 values and keep shell command options on separate lines.
 
 ## History
+
+On 2026-11-10 (Asia/Seoul), the API moved from ALB to a direct CloudFront VPC
+origin. One EC2 host and ECS service remain; RDS and the public API URL are unchanged.
+The templates reflect this completed migration, not the intermediate two-host setup.
 
 The ARM transition and NAT removal completed on 2026-11-08 (Asia/Seoul):
 [implementation](https://github.com/yabsed/chess/commit/e995b33203dc257c37523f274dcf18c18df1f4b8),

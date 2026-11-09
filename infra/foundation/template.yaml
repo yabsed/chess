@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Small Chess on public ARM hosts; CloudFront, ALB and private PostgreSQL stay managed.
+Description: Small Chess on one ARM ECS host behind a CloudFront VPC origin; private PostgreSQL is retained.
 
 
 Metadata:
@@ -24,6 +24,11 @@ Parameters:
   ECSImageId:
     Type:        AWS::EC2::Image::Id
     Description: Pinned ECS-optimized AL2023 ARM64 AMI; upgrades are explicit parameter changes.
+
+
+  CloudFrontOriginSecurityGroup:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Existing AWS-managed CloudFront VPC origins security group.
 
 
 Resources:
@@ -185,7 +190,7 @@ Resources:
       SubnetId:     !Ref PublicSubnetB
 
 
-  # ALB and PostgreSQL stay private; neither subnet needs a default internet route.
+  # PostgreSQL stays private; neither subnet needs a default internet route.
 
   PrivateRoutesA:
     Type: AWS::EC2::RouteTable
@@ -256,7 +261,21 @@ Resources:
           Value: !Sub '${ECSClusterName}-vpce-s3'
 
 
-  # Traffic: CloudFront -> private ALB -> backend
+  # Traffic: CloudFront -> private EC2 address -> ECS backend
+
+  DirectApiOrigin:
+    Type: AWS::CloudFront::VpcOrigin
+    DependsOn: [GatewayAttachment, OriginIngress]
+
+    Properties:
+      VpcOriginEndpointConfig:
+        Name:                 !Sub '${ECSClusterName}-direct-origin'
+        Arn:                  !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${OriginHost}'
+        HTTPPort:             8000
+        HTTPSPort:            443
+        OriginProtocolPolicy: http-only
+        OriginSSLProtocols:   [TLSv1.2]
+
 
   # API responses are never cached; viewer headers include auth and WebSocket headers.
   ApiDistribution:
@@ -272,9 +291,9 @@ Resources:
 
         Origins:
           - Id:         backend
-            DomainName: !GetAtt LoadBalancer.DNSName
+            DomainName: !GetAtt [OriginHost, PrivateDnsName]
             VpcOriginConfig:
-              VpcOriginId:            !GetAtt ApiOrigin.Id
+              VpcOriginId:            !GetAtt [DirectApiOrigin, Id]
               OriginReadTimeout:      30
               OriginKeepaliveTimeout: 5
 
@@ -293,94 +312,6 @@ Resources:
       Tags:
         - Key:   Name
           Value: !Sub '${ECSClusterName}-backend'
-
-
-  ApiOrigin:
-    Type:      AWS::CloudFront::VpcOrigin
-    DependsOn: GatewayAttachment
-    DeletionPolicy:      Retain
-    UpdateReplacePolicy: Retain
-
-    Properties:
-      VpcOriginEndpointConfig:
-        Name:                 !Sub '${ECSClusterName}-origin'
-        Arn:                  !Ref LoadBalancer
-        HTTPPort:             80
-        HTTPSPort:            443
-        OriginProtocolPolicy: http-only
-        OriginSSLProtocols:   [SSLv3, TLSv1, TLSv1.1, TLSv1.2]
-
-
-  # Only CloudFront may reach the private ALB. The prefix list is regional.
-  LoadBalancerSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    DeletionPolicy:      Retain
-    UpdateReplacePolicy: Retain
-
-    Properties:
-      GroupName:        !Sub '${ECSClusterName}-alb'
-      GroupDescription: Public HTTPS entry
-
-      VpcId: !Ref VPC
-      SecurityGroupIngress:
-        - IpProtocol:         tcp
-          FromPort:           80
-          ToPort:             80
-          SourcePrefixListId: pl-b8a742d1
-
-
-  LoadBalancer:
-    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
-    DeletionPolicy:      Retain
-    UpdateReplacePolicy: Retain
-
-    Properties:
-      Name:   !Sub '${ECSClusterName}-alb'
-      Scheme: internal
-      Type:   application
-
-      Subnets:
-        - !Ref PrivateSubnetA
-        - !Ref PrivateSubnetB
-      SecurityGroups:
-        - !Ref LoadBalancerSecurityGroup
-
-      LoadBalancerAttributes:
-        - Key:   idle_timeout.timeout_seconds
-          Value: '60'
-
-
-  Listener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    DeletionPolicy:      Retain
-    UpdateReplacePolicy: Retain
-
-    Properties:
-      LoadBalancerArn: !Ref LoadBalancer
-      Protocol:        HTTP
-      Port:            80
-      DefaultActions:
-        - Type:           forward
-          TargetGroupArn: !Ref TargetGroup
-
-
-  TargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-
-    Properties:
-      Name:       !Sub '${ECSClusterName}-bridge-tg'
-      VpcId:      !Ref VPC
-      TargetType: instance
-      Protocol:   HTTP
-      Port:       8000
-
-      HealthCheckPath:            /api/health
-      HealthCheckIntervalSeconds: 30
-      HealthCheckTimeoutSeconds:  5
-      HealthyThresholdCount:      5
-      UnhealthyThresholdCount:    2
-      Matcher:
-        HttpCode: '200'
 
 
   # Database
@@ -497,18 +428,24 @@ Resources:
 
     Properties:
       GroupName:        !Sub '${ECSClusterName}-backend'
+      # Preserve the immutable description to avoid replacing this RDS-referenced group.
       GroupDescription: Backend access from ALB
 
       VpcId: !Ref VPC
-      SecurityGroupIngress:
-        - IpProtocol:            tcp
-          # ECS registers each bridge task's dynamic host port with the ALB.
-          FromPort:              32768
-          ToPort:                65535
-          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
 
 
-  # Preserve the original logical IDs for the console-created ECS cluster and capacity.
+  OriginIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref BackendSecurityGroup
+      IpProtocol: tcp
+      FromPort:   8000
+      ToPort:     8000
+      SourceSecurityGroupId: !Ref CloudFrontOriginSecurityGroup
+      Description: Only the CloudFront VPC origin ENIs can reach the backend.
+
+
+  # Preserve the existing cluster identity; the application uses the EC2 launch type.
   ECSCluster:
     Type: AWS::ECS::Cluster
 
@@ -599,68 +536,48 @@ Resources:
             EOF
 
 
-  ECSAutoScalingGroup:
-    Type: AWS::AutoScaling::AutoScalingGroup
-    DependsOn: [PublicInternetRoute, PublicAssociationA, PublicAssociationB]
+  OriginHost:
+    Type: AWS::EC2::Instance
+    DependsOn: [PublicInternetRoute, PublicAssociationB]
 
-    UpdatePolicy:
-      AutoScalingInstanceRefresh:
-        Strategy: Rolling
-        Preferences:
-          MinHealthyPercentage:      100
-          MaxHealthyPercentage:      200
-          InstanceWarmup:            300
-          SkipMatching:              true
-          ScaleInProtectedInstances: Refresh
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: Stable single ECS host is the CloudFront private origin; no ALB hourly charge.
+        must:
+          - Only CloudFront may reach port 8000.
+          - No database data on the disposable root volume.
 
     Properties:
-      # ECS managed scaling owns DesiredCapacity.
-      MinSize: '1'
-      MaxSize: '2'
-      NewInstancesProtectedFromScaleIn: true
-
       LaunchTemplate:
         LaunchTemplateId: !Ref ECSLaunchTemplate
-        Version:          !GetAtt ECSLaunchTemplate.LatestVersionNumber
-      VPCZoneIdentifier:
-        - !Ref PublicSubnetA
-        - !Ref PublicSubnetB
+        Version:          !GetAtt [ECSLaunchTemplate, LatestVersionNumber]
+
+      NetworkInterfaces:
+        - DeviceIndex:              '0'
+          AssociatePublicIpAddress: true
+          DeleteOnTermination:     true
+          SubnetId:                !Ref PublicSubnetB
+          GroupSet:
+            - !Ref BackendSecurityGroup
+
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash
+          set -eu
+          cat >> /etc/ecs/ecs.config <<'EOF'
+          ECS_CLUSTER=${ECSCluster}
+          ECS_ENABLE_AWSLOGS_EXECUTIONROLE_OVERRIDE=true
+          ECS_RESERVED_MEMORY=256
+          ECS_INSTANCE_ATTRIBUTES={"chess.origin":"true"}
+          EOF
 
       Tags:
-        - Key:               Name
-          PropagateAtLaunch: true
-          Value:             !Sub 'ECS Instance - ${ECSClusterName}'
-
-
-  AsgCapacityProvider:
-    Type: AWS::ECS::CapacityProvider
-
-    Properties:
-      AutoScalingGroupProvider:
-        AutoScalingGroupArn: !Ref ECSAutoScalingGroup
-        ManagedScaling:
-          Status:         ENABLED
-          TargetCapacity: 100
-        ManagedTerminationProtection: ENABLED
-        ManagedDraining:              ENABLED
-
-
-  ClusterCPAssociation:
-    Type: AWS::ECS::ClusterCapacityProviderAssociations
-
-    Properties:
-      Cluster: !Ref ECSClusterName
-      CapacityProviders:
-        - FARGATE
-        - FARGATE_SPOT
-        - !Ref AsgCapacityProvider
-      DefaultCapacityProviderStrategy:
-        - Base:             0
-          Weight:           1
-          CapacityProvider: !Ref AsgCapacityProvider
+        - Key:   Name
+          Value: !Sub '${ECSClusterName}-origin'
 
 
   # ECS task startup: pull the image, write logs and read the database secret.
+
   ExecutionRole:
     Type: AWS::IAM::Role
     DeletionPolicy:      Retain
@@ -843,11 +760,6 @@ Outputs:
     Export:
       Name: !Sub '${AWS::StackName}-Cluster'
 
-  CapacityProvider:
-    Value: !Ref AsgCapacityProvider
-    Export:
-      Name: !Sub '${AWS::StackName}-CapacityProvider'
-
   PrivateSubnets:
     Value: !Join
       - ','
@@ -856,23 +768,10 @@ Outputs:
     Export:
       Name: !Sub '${AWS::StackName}-PrivateSubnets'
 
-  ProxyCidrs:
-    Value: !Join
-      - ','
-      - - !GetAtt PrivateSubnetA.CidrBlock
-        - !GetAtt PrivateSubnetB.CidrBlock
-    Export:
-      Name: !Sub '${AWS::StackName}-ProxyCidrs'
-
   BackendSecurityGroup:
     Value: !Ref BackendSecurityGroup
     Export:
       Name: !Sub '${AWS::StackName}-BackendSecurityGroup'
-
-  TargetGroup:
-    Value: !Ref TargetGroup
-    Export:
-      Name: !Sub '${AWS::StackName}-TargetGroup'
 
   ExecutionRole:
     Value: !GetAtt ExecutionRole.Arn
@@ -897,3 +796,17 @@ Outputs:
 
   ApiUrl:
     Value: !Sub 'https://${ApiDistribution.DomainName}'
+
+  OriginHost:
+    Value: !Ref OriginHost
+
+  OriginPrivateDns:
+    Value: !GetAtt [OriginHost, PrivateDnsName]
+
+  DirectVpcOrigin:
+    Value: !GetAtt [DirectApiOrigin, Id]
+
+  OriginProxyCidrs:
+    Value: !GetAtt [PublicSubnetB, CidrBlock]
+    Export:
+      Name: !Sub '${AWS::StackName}-OriginProxyCidrs'
