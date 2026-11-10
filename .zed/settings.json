@@ -1,0 +1,53 @@
+{
+  "lsp": {
+    "yaml-language-server": {
+      "settings": {
+        "yaml": {
+          "validate": true,
+          "hover": true,
+          "completion": true,
+          "schemaStore": {
+            "enable": false
+          },
+          "schemas": {
+            "https://raw.githubusercontent.com/compose-spec/compose-spec/main/schema/compose-spec.json": [
+              "**/infra/local/compose.yaml"
+            ],
+            "https://json.schemastore.org/github-workflow.json": [
+              "**/.github/workflows/*.{yml,yaml}"
+            ]
+          },
+          "customTags": [
+            "!Ref scalar",
+            "!Condition scalar",
+            "!Sub scalar",
+            "!Sub sequence",
+            "!GetAtt scalar",
+            "!GetAtt sequence",
+            "!Base64 scalar",
+            "!Base64 mapping",
+            "!Cidr sequence",
+            "!FindInMap sequence",
+            "!GetAZs scalar",
+            "!GetAZs mapping",
+            "!ImportValue scalar",
+            "!ImportValue mapping",
+            "!Join sequence",
+            "!Select sequence",
+            "!Split sequence",
+            "!And sequence",
+            "!Equals sequence",
+            "!If sequence",
+            "!Not sequence",
+            "!Or sequence",
+            "!Transform mapping",
+            "!Length sequence",
+            "!Length mapping",
+            "!ToJsonString mapping",
+            "!ToJsonString sequence"
+          ]
+        }
+      }
+    }
+  }
+}
